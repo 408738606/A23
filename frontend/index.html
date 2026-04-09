@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>文档智能助手</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">📄</span>
+                <span class="logo-text">文档智能助手</span>
+            </div>
+            <nav class="nav-menu">
+                <button class="nav-item active" data-tab="chat" onclick="switchTab('chat')">
+                    <span class="nav-icon">💬</span>
+                    <span>开始新对话</span>
+                </button>
+                <button class="nav-item" data-tab="files" onclick="switchTab('files')">
+                    <span class="nav-icon">📁</span>
+                    <span>文件管理</span>
+                </button>
+                <button class="nav-item" data-tab="export" onclick="switchTab('export')">
+                    <span class="nav-icon">📤</span>
+                    <span>导出数据</span>
+                </button>
+                <button class="nav-item" data-tab="history" onclick="switchTab('history')">
+                    <span class="nav-icon">🕐</span>
+                    <span>历史记录</span>
+                </button>
+                <button class="nav-item" data-tab="settings" onclick="switchTab('settings')">
+                    <span class="nav-icon">⚙️</span>
+                    <span>设置</span>
+                </button>
+            </nav>
+        </aside>
+
+        <main class="main-content">
+            <!-- 对话页面 -->
+            <div id="chatTab" class="tab-content active">
+                <header class="header">
+                    <h1 class="page-title">新对话</h1>
+                    <button class="upload-btn" onclick="triggerUpload()">
+                        <span>上传文件</span>
+                    </button>
+                </header>
+                <div class="chat-container" id="chatContainer">
+                    <div class="message ai-message">
+                        <div class="avatar">🤖</div>
+                        <div class="message-content">
+                            <p>你好！我是文档智能处理助手。请上传文件并告诉我你想要对文档进行的操作。</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="input-area">
+                    <div class="input-wrapper">
+                        <input type="text" id="messageInput" placeholder="给文档智能助手发送消息..." onkeypress="handleKeyPress(event)">
+                        <input type="file" id="fileInput" style="display: none;" accept=".doc,.docx,.pdf,.txt,.md" onchange="handleFileSelect(event)">
+                        <button class="send-btn" onclick="sendMessage()">➤</button>
+                    </div>
+                    <div class="file-status" id="fileStatus">未上传文件</div>
+                </div>
+            </div>
+
+            <!-- 文件管理页面 -->
+            <div id="filesTab" class="tab-content">
+                <header class="header">
+                    <h1 class="page-title">文件管理</h1>
+                    <div class="header-actions">
+                        <input type="text" id="fileSearch" placeholder="搜索文件..." oninput="searchFiles()" class="search-input">
+                        <button class="upload-btn" onclick="triggerFileManageUpload()">
+                            <span>导入文件</span>
+                        </button>
+                    </div>
+                </header>
+                <div class="file-manage-container">
+                    <div class="file-stats">
+                        <span>共 <strong id="totalFiles">0</strong> 个文件</span>
+                        <span>数据库总大小：<strong id="totalSize">0 KB</strong></span>
+                    </div>
+                    <div class="file-list" id="fileList">
+                        <div class="empty-state">暂无文件，请点击"导入文件"添加</div>
+                    </div>
+                    <input type="file" id="fileManageInput" style="display: none;" multiple onchange="handleFileManageUpload(event)">
+                </div>
+            </div>
+
+            <!-- 导出数据页面 -->
+            <div id="exportTab" class="tab-content">
+                <header class="header">
+                    <h1 class="page-title">导出数据</h1>
+                </header>
+                <div class="export-container">
+                    <!-- 提取方式选择 -->
+                    <div class="export-section">
+                        <h3>🔍 选择提取方式</h3>
+                        <div class="export-methods">
+                            <label class="export-method-card" onclick="selectExportMethod('local')">
+                                <input type="radio" name="exportMethod" value="local" id="localExport">
+                                <div class="method-content">
+                                    <span class="method-icon">🔒</span>
+                                    <div class="method-info">
+                                        <strong>OCR 本地提取</strong>
+                                        <span>数据不上传，保护隐私安全</span>
+                                        <small class="method-note">适合敏感文档，本地处理</small>
+                                    </div>
+                                </div>
+                            </label>
+                            <label class="export-method-card" onclick="selectExportMethod('online')">
+                                <input type="radio" name="exportMethod" value="online" id="onlineExport">
+                                <div class="method-content">
+                                    <span class="method-icon">☁️</span>
+                                    <div class="method-info">
+                                        <strong>API 在线提取</strong>
+                                        <span>云端 AI 智能识别，准确度更高</span>
+                                        <small class="method-note">需要网络连接，处理速度快</small>
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 上传模板区域 -->
+                    <div class="export-section">
+                        <h3>📤 上传导出模板</h3>
+                        <div class="upload-area" onclick="document.getElementById('templateUploadInput').click()">
+                            <div class="upload-placeholder">
+                                <span class="upload-icon">📋</span>
+                                <p>点击上传模板文件</p>
+                                <small>支持格式：.docx, .doc, .txt, .md, .pdf</small>
+                                <small style="display:block; margin-top:4px;">模板中可使用 {{字段名}} 作为数据占位符</small>
+                            </div>
+                        </div>
+                        <div id="templateFileInfo" class="uploaded-file-info" style="display:none"></div>
+                        <input type="file" id="templateUploadInput" style="display:none" accept=".docx,.doc,.txt,.md,.pdf" onchange="handleTemplateUpload(event)">
+                    </div>
+
+                    <!-- 上传用户要求区域 -->
+                    <div class="export-section">
+                        <h3>📝 上传用户要求</h3>
+                        <div class="upload-area" onclick="document.getElementById('requirementUploadInput').click()">
+                            <div class="upload-placeholder">
+                                <span class="upload-icon">📄</span>
+                                <p>点击上传要求文件（可选）</p>
+                                <small>支持格式：.docx, .doc, .txt, .md, .pdf</small>
+                            </div>
+                        </div>
+                        <div id="requirementFileInfo" class="uploaded-file-info" style="display:none"></div>
+                        <input type="file" id="requirementUploadInput" style="display:none" accept=".docx,.doc,.txt,.md,.pdf" onchange="handleRequirementUpload(event)">
+                    </div>
+
+                    <!-- 数据源匹配区域 -->
+                    <div class="export-section">
+                        <h3>🗂️ 选择数据源</h3>
+                        <div class="data-source-info">
+                            <p>从文件管理库中匹配以下文件：</p>
+                            <div id="matchedFilesList" class="matched-files-list">
+                                <div class="empty-state-small">请先上传模板，系统将自动匹配文件</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 导出选项 -->
+                    <div class="export-section">
+                        <h3>⚙️ 导出选项</h3>
+                        <div class="export-options">
+                            <label class="option-checkbox">
+                                <input type="checkbox" id="autoMatchCheckbox" checked>
+                                <span>自动匹配字段（根据模板中的 {{字段名}} 智能提取）</span>
+                            </label>
+                            <label class="option-checkbox">
+                                <input type="checkbox" id="includeRequirementCheckbox">
+                                <span>在导出结果中包含用户要求</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 导出按钮 -->
+                    <div class="export-section">
+                        <button class="export-btn" id="exportBtn" onclick="executeSmartExport()" disabled>
+                            🚀 开始智能导出
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 历史记录页面 -->
+            <div id="historyTab" class="tab-content">
+                <header class="header"><h1 class="page-title">历史记录</h1></header>
+                <div class="history-container"><div class="empty-state">暂无历史记录</div></div>
+            </div>
+
+            <!-- 设置页面 -->
+            <div id="settingsTab" class="tab-content">
+                <header class="header"><h1 class="page-title">设置</h1></header>
+                <div class="settings-container">
+                    <div class="setting-item">
+                        <span>默认提取方式</span>
+                        <select id="defaultExtractMethod">
+                            <option value="local">OCR 本地提取（隐私优先）</option>
+                            <option value="online">API 在线提取（速度优先）</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <span>导出格式默认设置</span>
+                        <select id="defaultExportFormat">
+                            <option value="docx">Word (.docx)</option>
+                            <option value="xlsx">Excel (.xlsx)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-spinner"></div>
+        <p id="loadingText">处理中...</p>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
