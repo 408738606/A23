@@ -21,15 +21,18 @@ import java.util.*;
 public class TableFillService {
 
     private static final Logger log = LoggerFactory.getLogger(TableFillService.class);
-    private static final int CHUNK_SIZE = 8000;
+    private static final int CHUNK_SIZE = 6500;
+    private static final int CHUNK_OVERLAP = 800;
     private static final int MAX_TEMPLATE_CHARS = 12000;
     private static final int MAX_REQUIREMENT_CHARS = 6000;
     private static final int MAX_REQUIREMENT_ANALYSIS_CHARS = 2400;
-    private static final int MAX_SUMMARY_CHARS = 1800;
-    private static final int MAX_FACTS_CHARS = 14000;
+    private static final int MAX_SUMMARY_CHARS = 2200;
+    private static final int MAX_FACTS_CHARS = 18000;
     private static final int REQUIREMENT_ANALYSIS_MAX_TOKENS = 1536;
     private static final int SUMMARY_MAX_TOKENS = 2048;
-    private static final int FINAL_GENERATION_MAX_TOKENS = 4096;
+    private static final int FINAL_GENERATION_MAX_TOKENS = 6144;
+    private static final int EXTRACTION_MAX_TOKENS = 8192;
+    private static final int RETRY_EXTRACTION_MAX_TOKENS = 4096;
 
     @Autowired private LlmService llmService;
     @Autowired private DocumentExtractService extractService;
@@ -69,11 +72,12 @@ public class TableFillService {
         String description;
         if ("xlsx".equals(ext) || "xls".equals(ext)) {
             TemplateInfo tmpl = parseTemplateInfo(template.path, ext);
+            String requirementAnalysis = analyzeRequirementDocument(config, requirementText, String.join(" | ", tmpl.headers), ext);
             String fullSourceText = sourceText;
             if (requirementText != null && !requirementText.isBlank()) {
                 fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
             }
-            List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText);
+            List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
             outputPath = writeRowsToTemplate(template.path, ext, tmpl, allRows, template.originalName);
             description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
         } else {
@@ -219,7 +223,8 @@ public class TableFillService {
                 Map.of("role", "system", "content", "你是专业的文档生成与排版助手。"),
                 Map.of("role", "user", "content", prompt)
         );
-        return llmService.chatLong(cloneConfigWithFixedTokens(config, FINAL_GENERATION_MAX_TOKENS), messages);
+        String generated = llmService.chatLong(cloneConfigWithFixedTokens(config, FINAL_GENERATION_MAX_TOKENS), messages);
+        return ensureNonEmptyGenerated(generated, templateSnippet, sourceFacts);
     }
 
     private String analyzeRequirementDocument(LlmConfig config,
@@ -243,6 +248,21 @@ public class TableFillService {
         );
         String analyzed = llmService.chatLong(cloneConfigWithFixedTokens(config, REQUIREMENT_ANALYSIS_MAX_TOKENS), messages);
         return clampText(analyzed, MAX_REQUIREMENT_ANALYSIS_CHARS, "用户要求解析");
+    }
+
+    private String ensureNonEmptyGenerated(String generated, String templateSnippet, String sourceFacts) {
+        if (generated != null && !generated.trim().isEmpty()) return generated;
+        StringBuilder fallback = new StringBuilder();
+        fallback.append("【自动兜底输出】\n");
+        if (templateSnippet != null && !templateSnippet.isBlank()) {
+            fallback.append("## 模板结构参考\n").append(clampText(templateSnippet, 5000, "模板兜底")).append("\n\n");
+        }
+        if (sourceFacts != null && !sourceFacts.isBlank()) {
+            fallback.append("## 数据源事实\n").append(clampText(sourceFacts, 6000, "事实兜底")).append("\n");
+        } else {
+            fallback.append("数据源信息不足，请补充后重试。\n");
+        }
+        return fallback.toString();
     }
 
     private String writeGeneratedOutput(String ext, String content, String originalName) throws IOException {
@@ -303,7 +323,8 @@ public class TableFillService {
     private List<Map<String, String>> extractAllRows(LlmConfig config,
                                                       TemplateInfo tmpl,
                                                       String fullSourceText,
-                                                      String requirementText) throws Exception {
+                                                      String requirementText,
+                                                      String requirementAnalysis) throws Exception {
         List<Map<String, String>> allRows = new ArrayList<>();
         List<String> chunks = splitIntoChunks(fullSourceText, CHUNK_SIZE);
         if (chunks.isEmpty()) {
@@ -316,9 +337,9 @@ public class TableFillService {
 
         for (int ci = 0; ci < chunks.size(); ci++) {
             String chunk = chunks.get(ci);
-            String prompt = buildExtractionPrompt(tmpl.headers, headersJson, chunk, ci, chunks.size(), requirementText);
+            String prompt = buildExtractionPrompt(tmpl.headers, headersJson, chunk, ci, chunks.size(), requirementText, requirementAnalysis);
 
-            LlmConfig extractConfig = cloneConfigWithHigherTokens(config, 8192);
+            LlmConfig extractConfig = cloneConfigWithHigherTokens(config, EXTRACTION_MAX_TOKENS);
             List<Map<String, String>> messages = List.of(
                     Map.of("role", "system", "content",
                             "你是专业的数据提取助手。严格按照要求的JSON格式输出，不添加任何额外说明文字。"
@@ -329,6 +350,14 @@ public class TableFillService {
             try {
                 String response = llmService.chatLong(extractConfig, messages);
                 List<Map<String, String>> rows = parseRowsFromResponse(response, tmpl.headers);
+                if (rows.isEmpty()) {
+                    String retryPrompt = buildRetryExtractionPrompt(tmpl.headers, headersJson, chunk, requirementText, requirementAnalysis);
+                    String retryResp = llmService.chatLong(cloneConfigWithFixedTokens(config, RETRY_EXTRACTION_MAX_TOKENS), List.of(
+                            Map.of("role", "system", "content", "你是JSON抽取修复助手，只能输出JSON数组。"),
+                            Map.of("role", "user", "content", retryPrompt)
+                    ));
+                    rows = parseRowsFromResponse(retryResp, tmpl.headers);
+                }
                 for (Map<String, String> row : rows) {
                     String key = buildRowKey(row, tmpl.headers);
                     if (!key.isBlank() && seen.add(key)) allRows.add(row);
@@ -338,15 +367,36 @@ public class TableFillService {
             }
         }
 
+        if (allRows.isEmpty()) {
+            String globalChunk = clampText(fullSourceText, CHUNK_SIZE * 2, "全局提取文本");
+            String fallbackPrompt = buildExtractionPrompt(tmpl.headers, headersJson, globalChunk, 0, 1, requirementText, requirementAnalysis)
+                    + "\n\n补充要求：若能识别到任意一条记录，请务必至少输出1个对象；若确实无记录再输出[]。";
+            try {
+                String fallbackResp = llmService.chatLong(cloneConfigWithFixedTokens(config, RETRY_EXTRACTION_MAX_TOKENS), List.of(
+                        Map.of("role", "system", "content", "你是高召回表格抽取助手，只输出JSON数组。"),
+                        Map.of("role", "user", "content", fallbackPrompt)
+                ));
+                List<Map<String, String>> rows = parseRowsFromResponse(fallbackResp, tmpl.headers);
+                for (Map<String, String> row : rows) {
+                    String key = buildRowKey(row, tmpl.headers);
+                    if (!key.isBlank() && seen.add(key)) allRows.add(row);
+                }
+            } catch (Exception e) {
+                log.warn("Global fallback extraction failed: {}", e.getMessage());
+            }
+        }
+
         return allRows;
     }
 
     private String buildExtractionPrompt(List<String> headers, String headersJson,
                                          String chunk, int chunkIndex, int totalChunks,
-                                         String requirementText) {
+                                         String requirementText,
+                                         String requirementAnalysis) {
         return "## 任务\n"
                 + "从以下文档片段中提取所有符合表格列头的数据行。\n\n"
                 + ((requirementText != null && !requirementText.isBlank()) ? "## 用户要求\n" + requirementText + "\n\n" : "")
+                + ((requirementAnalysis != null && !requirementAnalysis.isBlank()) ? "## 用户要求解析\n" + requirementAnalysis + "\n\n" : "")
                 + "## 表格列头（共 " + headers.size() + " 列）\n"
                 + headersJson + "\n\n"
                 + "## 文档内容（第 " + (chunkIndex + 1) + "/" + totalChunks + " 段）\n"
@@ -355,12 +405,29 @@ public class TableFillService {
                 + "1. 提取文档中所有能对应到上述列头的数据，不要遗漏任何一条\n"
                 + "2. 每条数据对应一个JSON对象，键必须和列头完全一致\n"
                 + "3. 找不到对应值的列填写空字符串 \"\"\n"
-                + "4. 只输出JSON数组，不要有任何解释、前缀或后缀文字\n"
-                + "5. 如果本段文档中没有符合条件的数据，输出空数组 []\n\n"
+                + "4. 优先识别“表格行/列表项/键值对”并映射到列头\n"
+                + "5. 只输出JSON数组，不要有任何解释、前缀或后缀文字\n"
+                + "6. 如果本段文档中没有符合条件的数据，输出空数组 []\n\n"
                 + "输出格式示例：\n"
                 + "[{\"" + (headers.isEmpty() ? "列1" : headers.get(0)) + "\": \"值1\", "
                 + "\"" + (headers.size() > 1 ? headers.get(1) : "列2") + "\": \"值2\"}]\n\n"
                 + "现在输出JSON数组：";
+    }
+
+    private String buildRetryExtractionPrompt(List<String> headers, String headersJson,
+                                              String chunk, String requirementText, String requirementAnalysis) {
+        return "请重新执行一次高召回抽取，必须输出合法JSON数组。\n\n"
+                + ((requirementText != null && !requirementText.isBlank()) ? "## 用户要求\n" + requirementText + "\n\n" : "")
+                + ((requirementAnalysis != null && !requirementAnalysis.isBlank()) ? "## 用户要求解析\n" + requirementAnalysis + "\n\n" : "")
+                + "## 列头\n" + headersJson + "\n\n"
+                + "## 输入文本\n" + chunk + "\n\n"
+                + "规则：\n"
+                + "1) 仅输出 JSON 数组\n"
+                + "2) 键名必须严格等于列头\n"
+                + "3) 无值填空字符串\n"
+                + "4) 先保证能提取到有效记录，再追求完整\n"
+                + "5) 若确实无记录输出 []\n"
+                + "示例键名首项: " + (headers.isEmpty() ? "列1" : headers.get(0));
     }
 
     private List<Map<String, String>> parseRowsFromResponse(String response, List<String> headers) {
@@ -537,7 +604,6 @@ public class TableFillService {
             chunks.add(text);
             return chunks;
         }
-        int overlap = 500;
         int start = 0;
         int len = text.length();
         while (start < len) {
@@ -548,7 +614,7 @@ public class TableFillService {
             }
             chunks.add(text.substring(start, end));
             if (end >= len) break;
-            int nextStart = Math.max(end - overlap + 1, start + 1);
+            int nextStart = Math.max(end - CHUNK_OVERLAP, start + 1);
             if (nextStart <= start) break;
             start = nextStart;
         }
