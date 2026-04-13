@@ -99,6 +99,7 @@ const navItems = computed(() => [
   { path: '/chat', icon: 'ChatLineRound', label: t.value.chat },
   { path: '/knowledge', icon: 'Folder', label: t.value.knowledge },
   { path: '/table-fill', icon: 'Grid', label: t.value.tableFill },
+  { path: '/doc-format', icon: 'EditPen', label: t.value.docFormat || '文档排版' },
   { path: '/settings', icon: 'Setting', label: t.value.settings },
 ])
 

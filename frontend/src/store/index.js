@@ -55,7 +55,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   const t = computed(() => {
     const zh = {
-      chat: '智能对话', knowledge: '知识库', tableFill: '表格填写', settings: '模型配置',
+      chat: '智能对话', knowledge: '知识库', tableFill: '表格填写', docFormat: '文档排版', settings: '模型配置',
       generalSettings: '通用设置', theme: '界面主题', language: '界面语言',
       newSession: '新会话', clearHistory: '清空', send: '发送',
       darkTheme: '深色', lightTheme: '浅色', blueTheme: '深海蓝', greenTheme: '丛林绿',
@@ -69,7 +69,7 @@ export const useSettingsStore = defineStore('settings', () => {
       modelConfig: '模型类型', ollama: 'Ollama本地', llamaCpp: 'llama.cpp', custom: '自定义本地',
     }
     const en = {
-      chat: 'Chat', knowledge: 'Knowledge Base', tableFill: 'Table Fill', settings: 'Model Config',
+      chat: 'Chat', knowledge: 'Knowledge Base', tableFill: 'Table Fill', docFormat: 'Doc Format', settings: 'Model Config',
       generalSettings: 'Settings', theme: 'Theme', language: 'Language',
       newSession: 'New', clearHistory: 'Clear', send: 'Send',
       darkTheme: 'Dark', lightTheme: 'Light', blueTheme: 'Ocean Blue', greenTheme: 'Forest Green',

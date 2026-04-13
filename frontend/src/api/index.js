@@ -50,16 +50,29 @@ export const llmApi = {
 }
 
 export const tableFillApi = {
-  fill: (template, sourceDocIds, llmConfigId, sessionId) => {
+  fill: ({
+    template,
+    templateDocId,
+    sourceDocIds = [],
+    sourceFiles = [],
+    requirementDocIds = [],
+    requirementFiles = [],
+    llmConfigId,
+    sessionId,
+  }) => {
     const fd = new FormData()
-    fd.append('template', template)
+    if (template) fd.append('template', template)
+    if (templateDocId) fd.append('templateDocId', templateDocId)
     sourceDocIds.forEach(id => fd.append('sourceDocIds', id))
+    sourceFiles.forEach(f => fd.append('sourceFiles', f))
+    requirementDocIds.forEach(id => fd.append('requirementDocIds', id))
+    requirementFiles.forEach(f => fd.append('requirementFiles', f))
     if (llmConfigId) fd.append('llmConfigId', llmConfigId)
     if (sessionId) fd.append('sessionId', sessionId)
     return api.post('/table-fill/fill', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 })
   },
   getOutputs: (sessionId) => api.get('/table-fill/outputs', { params: { sessionId } }),
-  saveToKb: (id) => api.post(`/table-fill/outputs/${id}/save-to-kb`),
+  saveToKb: (id, params = {}) => api.post(`/table-fill/outputs/${id}/save-to-kb`, null, { params }),
   deleteOutput: (id) => api.delete(`/table-fill/outputs/${id}`),
 }
 
@@ -73,4 +86,17 @@ export const chatApi = {
 export const fileApi = {
   downloadOutput: (id) => `/api/file/download/output/${id}`,
   downloadKnowledge: (id) => `/api/file/download/knowledge/${id}`,
+}
+
+export const docFormatApi = {
+  process: ({ file, knowledgeDocId, prompt, outputType, llmConfigId, sessionId }) => {
+    const fd = new FormData()
+    if (file) fd.append('file', file)
+    if (knowledgeDocId) fd.append('knowledgeDocId', knowledgeDocId)
+    fd.append('prompt', prompt)
+    if (outputType) fd.append('outputType', outputType)
+    if (llmConfigId) fd.append('llmConfigId', llmConfigId)
+    if (sessionId) fd.append('sessionId', sessionId)
+    return api.post('/doc-format/process', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 })
+  }
 }

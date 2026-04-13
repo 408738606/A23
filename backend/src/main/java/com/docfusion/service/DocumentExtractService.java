@@ -46,6 +46,29 @@ public class DocumentExtractService {
         return doc;
     }
 
+    public KnowledgeDocument importFileToKnowledgeBase(String sourcePath,
+                                                       String originalName,
+                                                       String category,
+                                                       String libraryType,
+                                                       String subDatabase) throws IOException {
+        String ext = getExtension(originalName).toLowerCase();
+        String savedPath = saveFileFromPath(sourcePath, originalName, appConfig.getKnowledgeBasePath());
+
+        KnowledgeDocument doc = new KnowledgeDocument();
+        doc.setFileName(originalName);
+        doc.setFileType(ext);
+        doc.setFilePath(savedPath);
+        doc.setFileSize(new File(savedPath).length());
+        doc.setCategory(category != null ? category : "默认");
+        doc.setLibraryType(libraryType != null ? libraryType : "database");
+        doc.setSubDatabase(subDatabase);
+        doc.setProcessed(false);
+        docRepo.save(doc);
+
+        extractTextAsync(doc.getId(), savedPath, ext);
+        return doc;
+    }
+
     // Overload for backward compatibility
     public KnowledgeDocument saveAndExtract(MultipartFile file, String category) throws IOException {
         return saveAndExtract(file, category, "database", null);
@@ -121,6 +144,13 @@ public class DocumentExtractService {
         String filename = System.currentTimeMillis() + "_" + file.getOriginalFilename();
         Path dest = Paths.get(dir, filename);
         Files.copy(file.getInputStream(), dest, StandardCopyOption.REPLACE_EXISTING);
+        return dest.toString();
+    }
+
+    private String saveFileFromPath(String sourcePath, String originalName, String dir) throws IOException {
+        String filename = System.currentTimeMillis() + "_" + originalName;
+        Path dest = Paths.get(dir, filename);
+        Files.copy(Paths.get(sourcePath), dest, StandardCopyOption.REPLACE_EXISTING);
         return dest.toString();
     }
 

@@ -42,6 +42,10 @@
         </div>
       </div>
       <div class="doc-search">
+        <el-select v-model="chatSubDb" clearable placeholder="先选子数据库" size="small" style="margin-bottom:6px">
+          <el-option label="全部" value="" />
+          <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
+        </el-select>
         <el-input v-model="docSearch" placeholder="搜索文档..." size="small" clearable>
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
@@ -190,7 +194,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { marked } from 'marked'
 import { useLlmStore, useKnowledgeStore, useSettingsStore } from '@/store/index.js'
 import { storeToRefs } from 'pinia'
-import { chatApi, fileApi } from '@/api/index.js'
+import { chatApi, fileApi, knowledgeApi } from '@/api/index.js'
 
 const llmStore = useLlmStore()
 const kbStore = useKnowledgeStore()
@@ -206,6 +210,8 @@ const sessionId = ref('')
 const selectedConfigId = ref(null)
 const messagesAreaRef = ref(null)
 const docSearch = ref('')
+const chatSubDb = ref('')
+const subDatabases = ref([])
 
 // Session history list
 const sessions = ref([])
@@ -218,7 +224,8 @@ const quickPrompts = [
 ]
 
 const filteredDocs = computed(() => {
-  const docs = kbStore.documents
+  let docs = kbStore.documents
+  if (chatSubDb.value) docs = docs.filter(d => d.subDatabase === chatSubDb.value)
   if (!docSearch.value) return docs
   return docs.filter(d => d.fileName.toLowerCase().includes(docSearch.value.toLowerCase()))
 })
@@ -469,8 +476,9 @@ async function sendMessage() {
 
 onMounted(async () => {
   loadSessions()
-  await llmStore.fetchConfigs()
-  await kbStore.fetchDocs()
+  await Promise.all([llmStore.fetchConfigs(), kbStore.fetchDocs()])
+  const subRes = await knowledgeApi.getSubDatabases()
+  if (subRes.success) subDatabases.value = subRes.data
   if (llmStore.activeConfigs.length > 0) {
     const def = llmStore.activeConfigs.find(c => c.isDefault)
     selectedConfigId.value = def?.id || llmStore.activeConfigs[0].id

@@ -2,6 +2,7 @@ package com.docfusion.controller;
 
 import com.docfusion.model.OutputFile;
 import com.docfusion.model.OutputFileRepo;
+import com.docfusion.service.DocumentExtractService;
 import com.docfusion.service.TableFillService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,25 +23,45 @@ public class TableFillController {
 
     @Autowired private TableFillService tableFillService;
     @Autowired private OutputFileRepo outputFileRepo;
+    @Autowired private DocumentExtractService documentExtractService;
 
     @PostMapping("/fill")
     public ResponseEntity<?> fill(
-            @RequestParam("template") MultipartFile template,
-            @RequestParam("sourceDocIds") List<Long> sourceDocIds,
+            @RequestParam(value = "template", required = false) MultipartFile template,
+            @RequestParam(value = "templateDocId", required = false) Long templateDocId,
+            @RequestParam(value = "sourceDocIds", required = false) List<Long> sourceDocIds,
+            @RequestParam(value = "sourceFiles", required = false) MultipartFile[] sourceFiles,
+            @RequestParam(value = "requirementDocIds", required = false) List<Long> requirementDocIds,
+            @RequestParam(value = "requirementFiles", required = false) MultipartFile[] requirementFiles,
             @RequestParam(value = "llmConfigId", required = false) Long llmConfigId,
             @RequestParam(value = "sessionId", required = false) String sessionId) {
         try {
-            if (sourceDocIds == null || sourceDocIds.isEmpty()) {
+            boolean hasKbSources = sourceDocIds != null && !sourceDocIds.isEmpty();
+            boolean hasLocalSources = sourceFiles != null && sourceFiles.length > 0;
+            if (!hasKbSources && !hasLocalSources) {
                 return ResponseEntity.badRequest().body(
-                        Map.of("success", false, "message", "请至少选择一个知识库文档作为数据来源"));
+                        Map.of("success", false, "message", "请至少选择一个数据源文档（知识库或本地上传）"));
+            }
+            if ((template == null || template.isEmpty()) && templateDocId == null) {
+                return ResponseEntity.badRequest().body(
+                        Map.of("success", false, "message", "请上传模板或从知识库选择模板文档"));
             }
             if (sessionId == null || sessionId.isBlank()) sessionId = UUID.randomUUID().toString();
 
-            log.info("Table fill: template={}, sourceDocs={}", template.getOriginalFilename(), sourceDocIds);
+            log.info("Table fill: template={}, templateDocId={}, sourceDocs={}, localSources={}",
+                    template != null ? template.getOriginalFilename() : "KB",
+                    templateDocId, sourceDocIds, sourceFiles != null ? sourceFiles.length : 0);
             long start = System.currentTimeMillis();
 
-            OutputFile result = tableFillService.fillTableFromKnowledgeBase(
-                    template, sourceDocIds, llmConfigId, sessionId);
+            OutputFile result = tableFillService.fillTableFlexible(
+                    template,
+                    templateDocId,
+                    sourceDocIds != null ? sourceDocIds : List.of(),
+                    sourceFiles,
+                    requirementDocIds != null ? requirementDocIds : List.of(),
+                    requirementFiles,
+                    llmConfigId,
+                    sessionId);
 
             long elapsed = System.currentTimeMillis() - start;
             log.info("Table fill completed in {}ms, rows described: {}", elapsed, result.getDescription());
@@ -67,12 +88,26 @@ public class TableFillController {
     }
 
     @PostMapping("/outputs/{id}/save-to-kb")
-    public ResponseEntity<?> saveToKb(@PathVariable Long id) {
+    public ResponseEntity<?> saveToKb(@PathVariable Long id,
+                                      @RequestParam(value = "libraryType", defaultValue = "database") String libraryType,
+                                      @RequestParam(value = "subDatabase", required = false) String subDatabase,
+                                      @RequestParam(value = "category", defaultValue = "AI结果") String category) {
         return outputFileRepo.findById(id).map(file -> {
-            file.setSavedToKnowledgeBase(true);
-            outputFileRepo.save(file);
-            return ResponseEntity.ok(Map.of("success", true, "message", "已保存到知识库"));
-        }).orElse(ResponseEntity.notFound().build());
+            try {
+                documentExtractService.importFileToKnowledgeBase(
+                        file.getFilePath(),
+                        file.getFileName(),
+                        category,
+                        libraryType,
+                        subDatabase);
+                file.setSavedToKnowledgeBase(true);
+                outputFileRepo.save(file);
+                return ResponseEntity.ok(Map.of("success", true, "message", "已保存到知识库"));
+            } catch (Exception e) {
+                return ResponseEntity.internalServerError().body(
+                        Map.of("success", false, "message", "保存到知识库失败: " + e.getMessage()));
+            }
+        }).orElse(ResponseEntity.status(404).body(Map.of("success", false, "message", "输出文件不存在")));
     }
 
     @DeleteMapping("/outputs/{id}")

@@ -3,214 +3,272 @@
     <div class="page-header">
       <div>
         <h2>📋 智能表格填写</h2>
-        <p class="subtitle">上传表格模板，AI将从知识库文档中自动提取信息并填写，AI分批提取，支持100+条数据，大数据集耗时较长请耐心等待</p>
+        <p class="subtitle">支持模板、数据源、用户要求文档从知识库（先子数据库后文件）或本地上传选择</p>
       </div>
     </div>
 
     <div class="fill-content">
-      <!-- Left: Config Panel -->
       <div class="config-panel">
         <div class="panel-section">
-          <div class="section-title">① 上传表格模板</div>
+          <div class="section-title">① 选择模板</div>
+          <el-radio-group v-model="templateMode" size="small">
+            <el-radio-button label="local">本地上传</el-radio-button>
+            <el-radio-button label="knowledge">知识库选择</el-radio-button>
+          </el-radio-group>
+
           <el-upload
+            v-if="templateMode === 'local'"
             drag
             :auto-upload="false"
             :limit="1"
             :file-list="templateFileList"
             :on-change="onTemplateChange"
             :on-remove="onTemplateRemove"
-            accept=".docx,.doc,.xlsx,.xls"
+            accept=".docx,.doc,.xlsx,.xls,.md,.txt"
             class="template-upload"
           >
-            <el-icon class="el-icon--upload" style="font-size: 28px; color: var(--df-text-muted)"><UploadFilled /></el-icon>
-            <div class="el-upload__text" style="margin-top: 8px; font-size: 13px;">
-              拖拽模板文件或<em>点击选择</em>
-            </div>
-            <template #tip>
-              <div class="upload-tip">支持 Word (.docx) 和 Excel (.xlsx)</div>
-            </template>
+            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+            <div class="el-upload__text">拖拽模板文件或<em>点击选择</em></div>
+            <template #tip><div class="upload-tip">支持 doc/docx/xls/xlsx/md/txt</div></template>
           </el-upload>
 
-          <div v-if="templateFile" class="template-info">
-            <span>{{ getFileIcon(templateFile.name) }} {{ templateFile.name }}</span>
-            <span class="file-size">{{ formatSize(templateFile.size) }}</span>
+          <div v-else class="selector-box">
+            <el-select v-model="templateSubDb" clearable placeholder="先选择子数据库" style="width:100%;margin-bottom:8px">
+              <el-option label="全部" value="" />
+              <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
+            </el-select>
+            <el-select v-model="templateDocId" filterable placeholder="再选择模板文件" style="width:100%">
+              <el-option
+                v-for="d in templateKbDocs"
+                :key="d.id"
+                :label="d.fileName"
+                :value="d.id"
+              />
+            </el-select>
           </div>
         </div>
 
         <div class="panel-section">
-          <div class="section-title">② 选择数据来源文档</div>
-          <div class="source-hint">从知识库中选择包含填写数据的文档</div>
-
-          <div class="doc-select-all">
-            <el-checkbox v-model="allSelected" @change="toggleAllDocs" :indeterminate="indeterminate">
-              全选（{{ selectedSourceIds.length }}/{{ kbDocs.length }}）
-            </el-checkbox>
-            <el-button size="small" text @click="refreshKbDocs">
-              <el-icon><Refresh /></el-icon>
-            </el-button>
-          </div>
-
-          <div class="doc-select-list">
-            <div v-if="kbDocs.length === 0" class="no-docs">
-              <el-icon><FolderOpened /></el-icon>
-              <span>知识库为空</span>
-              <router-link to="/knowledge">前往上传</router-link>
-            </div>
-            <el-checkbox-group v-model="selectedSourceIds">
-              <div v-for="doc in kbDocs" :key="doc.id" class="doc-check-item">
-                <el-checkbox :label="doc.id">
-                  <div class="doc-label">
-                    <span>{{ getFileIcon(doc.fileType) }}</span>
-                    <span class="doc-name-text" :title="doc.fileName">{{ doc.fileName }}</span>
-                    <el-tag size="small" :type="doc.processed ? 'success' : 'warning'" style="margin-left: auto; flex-shrink:0">
-                      {{ doc.processed ? '就绪' : '处理中' }}
-                    </el-tag>
+          <div class="section-title">② 选择数据源文档</div>
+          <el-tabs v-model="sourceTab">
+            <el-tab-pane label="知识库" name="kb">
+              <el-select v-model="sourceSubDb" clearable placeholder="先选子数据库" style="width:100%;margin-bottom:8px">
+                <el-option label="全部" value="" />
+                <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
+              </el-select>
+              <div class="doc-list">
+                <el-checkbox-group v-model="selectedSourceIds">
+                  <div v-for="doc in sourceKbDocs" :key="doc.id" class="doc-item">
+                    <el-checkbox :label="doc.id">
+                      <span>{{ getFileIcon(doc.fileType) }} {{ doc.fileName }}</span>
+                    </el-checkbox>
                   </div>
-                </el-checkbox>
+                </el-checkbox-group>
               </div>
-            </el-checkbox-group>
-          </div>
+            </el-tab-pane>
+            <el-tab-pane label="本地上传" name="local">
+              <el-upload
+                drag
+                multiple
+                :auto-upload="false"
+                :file-list="sourceFileList"
+                :on-change="(_, list) => sourceFileList = list"
+                :on-remove="(_, list) => sourceFileList = list"
+                accept=".docx,.doc,.xlsx,.xls,.md,.txt"
+              >
+                <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+                <div class="el-upload__text">拖拽或点击上传数据源文件</div>
+              </el-upload>
+            </el-tab-pane>
+          </el-tabs>
         </div>
 
         <div class="panel-section">
-          <div class="section-title">③ 选择模型</div>
-          <el-select v-model="selectedConfigId" placeholder="选择大模型" style="width: 100%">
-            <el-option
-              v-for="cfg in llmConfigs"
-              :key="cfg.id"
-              :label="`${cfg.configName} (${cfg.modelName})`"
-              :value="cfg.id"
-            />
+          <div class="section-title">③ 用户要求文档（可选）</div>
+          <el-tabs v-model="reqTab">
+            <el-tab-pane label="知识库" name="kb">
+              <el-select v-model="requirementSubDb" clearable placeholder="先选子数据库" style="width:100%;margin-bottom:8px">
+                <el-option label="全部" value="" />
+                <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
+              </el-select>
+              <div class="doc-list">
+                <el-checkbox-group v-model="selectedRequirementIds">
+                  <div v-for="doc in requirementKbDocs" :key="doc.id" class="doc-item">
+                    <el-checkbox :label="doc.id">
+                      <span>{{ getFileIcon(doc.fileType) }} {{ doc.fileName }}</span>
+                    </el-checkbox>
+                  </div>
+                </el-checkbox-group>
+              </div>
+            </el-tab-pane>
+            <el-tab-pane label="本地上传" name="local">
+              <el-upload
+                drag
+                multiple
+                :auto-upload="false"
+                :file-list="requirementFileList"
+                :on-change="(_, list) => requirementFileList = list"
+                :on-remove="(_, list) => requirementFileList = list"
+                accept=".docx,.doc,.xlsx,.xls,.md,.txt"
+              >
+                <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+                <div class="el-upload__text">拖拽或点击上传用户要求文档</div>
+              </el-upload>
+            </el-tab-pane>
+          </el-tabs>
+        </div>
+
+        <div class="panel-section">
+          <div class="section-title">④ 选择模型</div>
+          <el-select v-model="selectedConfigId" placeholder="选择大模型" style="width:100%">
+            <el-option v-for="cfg in llmConfigs" :key="cfg.id" :label="`${cfg.configName} (${cfg.modelName})`" :value="cfg.id" />
           </el-select>
         </div>
 
-        <el-button
-          type="primary"
-          :loading="filling"
-          :disabled="!templateFile || selectedSourceIds.length === 0 || !selectedConfigId"
-          @click="startFill"
-          style="width: 100%; height: 44px; font-size: 15px; margin-top: 8px"
-        >
-          <el-icon v-if="!filling"><MagicStick /></el-icon>
+        <el-button type="primary" :loading="filling" :disabled="!canSubmit" @click="startFill" style="width:100%;margin-top:6px">
           {{ filling ? 'AI 正在填写中...' : '开始智能填写' }}
         </el-button>
-
-        <div v-if="filling" class="progress-area">
-          <el-progress :percentage="fillProgress" :stroke-width="6" :show-text="false" />
-          <div class="progress-tips">{{ progressTip }}</div>
-          <div class="elapsed" v-if="elapsedTime > 0">已用时 {{ elapsedTime }}s（大数据集可能需要数分钟）</div>
-        </div>
       </div>
 
-      <!-- Right: Results Panel -->
       <div class="results-panel">
         <div class="results-header">
           <span>📂 填写结果</span>
-          <el-button size="small" text @click="refreshOutputs">
-            <el-icon><Refresh /></el-icon>
-          </el-button>
+          <el-button size="small" text @click="refreshOutputs"><el-icon><Refresh /></el-icon></el-button>
         </div>
 
-        <div v-if="outputs.length === 0" class="results-empty">
-          <el-icon style="font-size: 48px; color: var(--df-text-muted)"><Document /></el-icon>
-          <p>尚无填写结果</p>
-          <p style="font-size: 12px; color: var(--df-text-muted)">完成填写后结果将显示在此处</p>
-        </div>
-
+        <div v-if="outputs.length === 0" class="results-empty">尚无填写结果</div>
         <div v-else class="output-list">
           <div v-for="output in outputs" :key="output.id" class="output-card">
-            <div class="output-header">
-              <span class="output-icon">{{ getFileIcon(output.fileType) }}</span>
-              <div class="output-info">
-                <div class="output-name" :title="output.fileName">{{ output.fileName }}</div>
-                <div class="output-meta">
-                  {{ formatSize(output.fileSize) }} · {{ formatDate(output.createdAt) }}
-                </div>
-              </div>
-              <el-tag v-if="output.savedToKnowledgeBase" size="small" type="success">已入库</el-tag>
-            </div>
-
+            <div class="output-name">{{ output.fileName }}</div>
+            <div class="output-meta">{{ formatSize(output.fileSize) }} · {{ formatDate(output.createdAt) }}</div>
             <div class="output-desc" v-if="output.description">{{ output.description }}</div>
-
             <div class="output-actions">
-              <el-button type="primary" size="small" @click="downloadOutput(output)">
-                <el-icon><Download /></el-icon> 下载文件
-              </el-button>
-              <el-button size="small" @click="saveToKb(output)" :disabled="output.savedToKnowledgeBase">
-                <el-icon><FolderAdd /></el-icon> 存入知识库
-              </el-button>
-              <el-button size="small" text type="danger" @click="deleteOutput(output)">
-                <el-icon><Delete /></el-icon>
-              </el-button>
+              <el-button type="primary" size="small" @click="downloadOutput(output)">下载</el-button>
+              <el-button size="small" @click="openSaveDialog(output)" :disabled="output.savedToKnowledgeBase">存入知识库</el-button>
+              <el-button size="small" text type="danger" @click="deleteOutput(output)">删除</el-button>
             </div>
           </div>
         </div>
       </div>
     </div>
+
+    <el-dialog v-model="saveDialogVisible" title="存入知识库" width="420px">
+      <el-form label-width="90px">
+        <el-form-item label="库类型">
+          <el-select v-model="saveForm.libraryType" style="width:100%">
+            <el-option label="数据库" value="database" />
+            <el-option label="学习库" value="learning" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="子数据库" v-if="saveForm.libraryType === 'database'">
+          <el-select v-model="saveForm.subDatabase" clearable allow-create filterable style="width:100%">
+            <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="分类">
+          <el-input v-model="saveForm.category" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="saveDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveToKb">确认</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { knowledgeApi, tableFillApi, llmApi, fileApi } from '@/api/index.js'
 
 const kbDocs = ref([])
-const selectedSourceIds = ref([])
+const subDatabases = ref([])
+
+const templateMode = ref('local')
 const templateFile = ref(null)
 const templateFileList = ref([])
+const templateDocId = ref(null)
+const templateSubDb = ref('')
+
+const sourceTab = ref('kb')
+const sourceSubDb = ref('')
+const selectedSourceIds = ref([])
+const sourceFileList = ref([])
+
+const reqTab = ref('kb')
+const requirementSubDb = ref('')
+const selectedRequirementIds = ref([])
+const requirementFileList = ref([])
+
 const llmConfigs = ref([])
 const selectedConfigId = ref(null)
-const outputs = ref([])
 const filling = ref(false)
-const fillProgress = ref(0)
-const progressTip = ref('')
-const elapsedTime = ref(0)
-let progressTimer = null
+const outputs = ref([])
 
-const allSelected = computed({
-  get: () => kbDocs.value.length > 0 && selectedSourceIds.value.length === kbDocs.value.length,
-  set: () => {}
+const saveDialogVisible = ref(false)
+const targetOutput = ref(null)
+const saveForm = ref({ libraryType: 'database', subDatabase: '', category: 'AI填写结果' })
+
+const validTemplateExt = ['docx', 'doc', 'xlsx', 'xls', 'md', 'txt']
+const templateKbDocs = computed(() => {
+  let list = kbDocs.value.filter(d => validTemplateExt.includes((d.fileType || '').toLowerCase()))
+  if (templateSubDb.value) list = list.filter(d => d.subDatabase === templateSubDb.value)
+  return list
+})
+const sourceKbDocs = computed(() => {
+  let list = kbDocs.value
+  if (sourceSubDb.value) list = list.filter(d => d.subDatabase === sourceSubDb.value)
+  return list
+})
+const requirementKbDocs = computed(() => {
+  let list = kbDocs.value
+  if (requirementSubDb.value) list = list.filter(d => d.subDatabase === requirementSubDb.value)
+  return list
 })
 
-const indeterminate = computed(() =>
-  selectedSourceIds.value.length > 0 && selectedSourceIds.value.length < kbDocs.value.length
-)
-
-function toggleAllDocs(val) {
-  selectedSourceIds.value = val ? kbDocs.value.map(d => d.id) : []
-}
-
-const getFileIcon = (type) => {
-  const m = { docx: '📄', doc: '📄', xlsx: '📊', xls: '📊', md: '📝', txt: '📃' }
-  return m[type?.toLowerCase()] || '📎'
-}
-
-const formatSize = (bytes) => {
-  if (!bytes) return '-'
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
-}
-
-const formatDate = (d) => {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-}
+const canSubmit = computed(() => {
+  const hasTemplate = templateMode.value === 'local' ? !!templateFile.value : !!templateDocId.value
+  const hasSource = selectedSourceIds.value.length > 0 || sourceFileList.value.length > 0
+  return hasTemplate && hasSource && !!selectedConfigId.value
+})
 
 function onTemplateChange(file) {
   templateFile.value = file.raw
   templateFileList.value = [file]
 }
-
 function onTemplateRemove() {
   templateFile.value = null
   templateFileList.value = []
 }
 
+async function startFill() {
+  if (!canSubmit.value) return
+  filling.value = true
+  try {
+    const res = await tableFillApi.fill({
+      template: templateMode.value === 'local' ? templateFile.value : null,
+      templateDocId: templateMode.value === 'knowledge' ? templateDocId.value : null,
+      sourceDocIds: selectedSourceIds.value,
+      sourceFiles: sourceFileList.value.map(f => f.raw),
+      requirementDocIds: selectedRequirementIds.value,
+      requirementFiles: requirementFileList.value.map(f => f.raw),
+      llmConfigId: selectedConfigId.value,
+      sessionId: null,
+    })
+    if (res.success) {
+      ElMessage.success(`表格填写完成，耗时 ${Math.round(res.elapsedMs / 1000)} 秒`)
+      await refreshOutputs()
+    }
+  } finally {
+    filling.value = false
+  }
+}
+
 async function refreshKbDocs() {
-  const res = await knowledgeApi.list()
+  const [res, subRes] = await Promise.all([knowledgeApi.list(), knowledgeApi.getSubDatabases()])
   if (res.success) kbDocs.value = res.data
+  if (subRes.success) subDatabases.value = subRes.data
 }
 
 async function refreshOutputs() {
@@ -218,67 +276,26 @@ async function refreshOutputs() {
   if (res.success) outputs.value = res.data
 }
 
-const progressTips = [
-  '① 正在解析模板列头结构...',
-  '② 读取知识库文档全文...',
-  '③ 将文档分块，准备批量提取...',
-  '④ AI正在处理第1批数据...',
-  '⑤ AI正在处理数据，大文档多次调用请稍候...',
-  '⑥ AI正在提取并去重所有行...',
-  '⑦ 正在将提取结果写入表格...',
-  '⑧ 生成最终文件中...',
-]
-
-async function startFill() {
-  if (!templateFile.value || selectedSourceIds.value.length === 0) return
-
-  filling.value = true
-  fillProgress.value = 0
-  elapsedTime.value = 0
-
-  let tipIdx = 0
-  progressTip.value = progressTips[0]
-
-  progressTimer = setInterval(() => {
-    elapsedTime.value++
-    fillProgress.value = Math.min(fillProgress.value + 100 / 300, 94)
-    tipIdx = Math.floor((fillProgress.value / 100) * progressTips.length)
-    progressTip.value = progressTips[Math.min(tipIdx, progressTips.length - 1)]
-  }, 1000)
-
-  try {
-    const res = await tableFillApi.fill(
-      templateFile.value,
-      selectedSourceIds.value,
-      selectedConfigId.value,
-      null
-    )
-    clearInterval(progressTimer)
-    fillProgress.value = 100
-    progressTip.value = '✅ 填写完成！'
-
-    if (res.success) {
-      ElMessage.success(`表格填写完成，耗时 ${Math.round(res.elapsedMs / 1000)} 秒`)
-      await refreshOutputs()
-    }
-  } catch (e) {
-    clearInterval(progressTimer)
-    ElMessage.error('填写失败: ' + (e.response?.data?.message || e.message))
-  } finally {
-    filling.value = false
-    progressTimer = null
-  }
-}
-
 function downloadOutput(output) {
   window.open(fileApi.downloadOutput(output.id), '_blank')
 }
 
-async function saveToKb(output) {
-  const res = await tableFillApi.saveToKb(output.id)
+function openSaveDialog(output) {
+  targetOutput.value = output
+  saveDialogVisible.value = true
+}
+
+async function saveToKb() {
+  if (!targetOutput.value) return
+  const res = await tableFillApi.saveToKb(targetOutput.value.id, {
+    libraryType: saveForm.value.libraryType,
+    subDatabase: saveForm.value.subDatabase || null,
+    category: saveForm.value.category || 'AI填写结果',
+  })
   if (res.success) {
     ElMessage.success('已保存到知识库')
-    output.savedToKnowledgeBase = true
+    targetOutput.value.savedToKnowledgeBase = true
+    saveDialogVisible.value = false
     await refreshKbDocs()
   }
 }
@@ -290,215 +307,42 @@ async function deleteOutput(output) {
   await refreshOutputs()
 }
 
+const getFileIcon = (type) => ({ docx: '📄', doc: '📄', xlsx: '📊', xls: '📊', md: '📝', txt: '📃' })[type?.toLowerCase()] || '📎'
+const formatSize = (bytes) => !bytes ? '-' : bytes < 1024 * 1024 ? (bytes / 1024).toFixed(1) + ' KB' : (bytes / 1024 / 1024).toFixed(1) + ' MB'
+const formatDate = (d) => !d ? '-' : new Date(d).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+
 onMounted(async () => {
   await refreshKbDocs()
   await refreshOutputs()
-  const res = await llmApi.list()
-  if (res.success) {
-    llmConfigs.value = res.data.filter(c => c.isActive)
+  const cfgRes = await llmApi.list()
+  if (cfgRes.success) {
+    llmConfigs.value = cfgRes.data.filter(c => c.isActive)
     const def = llmConfigs.value.find(c => c.isDefault)
-    if (def) selectedConfigId.value = def.id
-    else if (llmConfigs.value.length > 0) selectedConfigId.value = llmConfigs.value[0].id
+    selectedConfigId.value = def?.id || llmConfigs.value[0]?.id || null
   }
 })
 </script>
 
 <style scoped>
 .page-layout { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-
-.page-header {
-  padding: 20px 24px 16px;
-  background: var(--df-surface);
-  border-bottom: 1px solid var(--df-border);
-}
-
-.page-header h2 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
-.subtitle { font-size: 13px; color: var(--df-text-muted); }
-
-.fill-content {
-  flex: 1;
-  display: flex;
-  gap: 0;
-  overflow: hidden;
-}
-
-.config-panel {
-  width: 360px;
-  min-width: 360px;
-  background: var(--df-surface);
-  border-right: 1px solid var(--df-border);
-  padding: 20px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.panel-section { display: flex; flex-direction: column; gap: 10px; }
-
-.section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--df-text);
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--df-border);
-}
-
-.template-upload { width: 100%; }
-
-.upload-tip { font-size: 11px; color: var(--df-text-muted); text-align: center; margin-top: 4px; }
-
-.template-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: var(--df-surface2);
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--df-text);
-}
-
-.file-size { font-size: 12px; color: var(--df-text-muted); }
-
-.source-hint { font-size: 12px; color: var(--df-text-muted); }
-
-.doc-select-all {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.doc-select-list {
-  max-height: 240px;
-  overflow-y: auto;
-  background: var(--df-surface2);
-  border-radius: 8px;
-  padding: 8px;
-}
-
-.no-docs {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 24px;
-  color: var(--df-text-muted);
-  font-size: 13px;
-}
-
-.no-docs a { color: var(--df-primary); text-decoration: none; }
-
-.doc-check-item { padding: 6px 4px; }
-
-.doc-check-item .el-checkbox { width: 100%; }
-
-.doc-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-}
-
-.doc-name-text {
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-
-.progress-area {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  background: var(--df-surface2);
-  border-radius: 8px;
-}
-
-.progress-tips { font-size: 13px; color: var(--df-accent); text-align: center; }
-
-.elapsed { font-size: 12px; color: var(--df-text-muted); text-align: center; }
-
-/* Results panel */
-.results-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--df-bg);
-}
-
-.results-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  font-size: 14px;
-  font-weight: 600;
-  border-bottom: 1px solid var(--df-border);
-  background: var(--df-surface);
-}
-
-.results-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: var(--df-text-muted);
-}
-
-.output-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.output-card {
-  background: var(--df-surface);
-  border: 1px solid var(--df-border);
-  border-radius: 10px;
-  padding: 16px;
-  transition: border-color 0.2s;
-}
-
-.output-card:hover { border-color: var(--df-primary); }
-
-.output-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.output-icon { font-size: 24px; }
-
-.output-info { flex: 1; min-width: 0; }
-
-.output-name {
-  font-size: 14px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+.page-header { padding: 20px 24px 14px; background: var(--df-surface); border-bottom: 1px solid var(--df-border); }
+.subtitle { font-size: 12px; color: var(--df-text-muted); }
+.fill-content { flex: 1; display: flex; overflow: hidden; }
+.config-panel { width: 410px; min-width: 410px; background: var(--df-surface); border-right: 1px solid var(--df-border); padding: 16px; overflow-y: auto; }
+.results-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.results-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--df-border); background: var(--df-surface); }
+.results-empty { padding: 20px; color: var(--df-text-muted); }
+.output-list { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.output-card { background: var(--df-surface); border: 1px solid var(--df-border); border-radius: 8px; padding: 12px; }
+.output-name { font-size: 14px; font-weight: 600; }
 .output-meta { font-size: 12px; color: var(--df-text-muted); margin-top: 2px; }
-
-.output-desc {
-  font-size: 12px;
-  color: var(--df-text-muted);
-  margin-bottom: 10px;
-  padding: 6px 10px;
-  background: var(--df-surface2);
-  border-radius: 6px;
-}
-
-.output-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.output-desc { margin-top: 8px; font-size: 12px; color: var(--df-text-muted); }
+.output-actions { margin-top: 8px; display: flex; gap: 8px; }
+.panel-section { margin-bottom: 16px; }
+.section-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.template-upload { width: 100%; }
+.upload-tip { font-size: 11px; color: var(--df-text-muted); text-align: center; margin-top: 4px; }
+.selector-box { background: var(--df-surface2); border: 1px solid var(--df-border); border-radius: 8px; padding: 10px; }
+.doc-list { max-height: 180px; overflow-y: auto; background: var(--df-surface2); border-radius: 8px; padding: 8px; }
+.doc-item { padding: 4px 2px; }
 </style>
