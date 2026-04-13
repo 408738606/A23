@@ -308,7 +308,7 @@ async function deleteOutput(output) {
 }
 
 const getFileIcon = (type) => ({ docx: '📄', doc: '📄', xlsx: '📊', xls: '📊', md: '📝', txt: '📃' })[type?.toLowerCase()] || '📎'
-const formatSize = (bytes) => !bytes ? '-' : bytes < 1024 * 1024 ? (bytes / 1024).toFixed(1) + ' KB' : (bytes / 1024 / 1024).toFixed(1) + ' MB'
+const formatSize = (bytes) => !bytes ? '-' : bytes < 1024 ? bytes + ' B' : bytes < 1024 * 1024 ? (bytes / 1024).toFixed(1) + ' KB' : (bytes / 1024 / 1024).toFixed(1) + ' MB'
 const formatDate = (d) => !d ? '-' : new Date(d).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 
 onMounted(async () => {

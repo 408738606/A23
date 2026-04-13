@@ -156,7 +156,7 @@ public class TableFillService {
                                           String requirementText,
                                           String ext) throws Exception {
         String prompt = "你是文档填写助手。请根据模板结构与用户要求生成最终文档内容。\n\n"
-                + "# 用户要求\n" + (requirementText == null ? "" : requirementText) + "\n\n"
+                + ((requirementText != null && !requirementText.isBlank()) ? "# 用户要求\n" + requirementText + "\n\n" : "")
                 + "# 模板内容\n" + templateText + "\n\n"
                 + "# 数据源\n" + sourceText + "\n\n"
                 + "输出要求：\n"
@@ -234,7 +234,10 @@ public class TableFillService {
                                                       String requirementText) throws Exception {
         List<Map<String, String>> allRows = new ArrayList<>();
         List<String> chunks = splitIntoChunks(fullSourceText, CHUNK_SIZE);
-        if (chunks.isEmpty()) return allRows;
+        if (chunks.isEmpty()) {
+            log.warn("No source text available for extraction");
+            return allRows;
+        }
 
         String headersJson = objectMapper.writeValueAsString(tmpl.headers);
         Set<String> seen = new LinkedHashSet<>();
@@ -271,7 +274,7 @@ public class TableFillService {
                                          String requirementText) {
         return "## 任务\n"
                 + "从以下文档片段中提取所有符合表格列头的数据行。\n\n"
-                + "## 用户要求\n" + (requirementText == null ? "" : requirementText) + "\n\n"
+                + ((requirementText != null && !requirementText.isBlank()) ? "## 用户要求\n" + requirementText + "\n\n" : "")
                 + "## 表格列头（共 " + headers.size() + " 列）\n"
                 + headersJson + "\n\n"
                 + "## 文档内容（第 " + (chunkIndex + 1) + "/" + totalChunks + " 段）\n"
@@ -474,6 +477,7 @@ public class TableFillService {
             chunks.add(text.substring(start, end));
             if (end >= len) break;
             int nextStart = Math.max(end - overlap + 1, start + 1);
+            if (nextStart <= start) break;
             start = nextStart;
         }
         return chunks;
