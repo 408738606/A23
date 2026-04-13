@@ -47,7 +47,7 @@
           <el-option v-for="cfg in llmConfigs" :key="cfg.id" :label="`${cfg.configName} (${cfg.modelName})`" :value="cfg.id" />
         </el-select>
         <el-select v-model="outputType" placeholder="输出格式" style="width:100%">
-          <el-option label="DOCX" value="docx" />
+          <el-option label="Word (DOCX)" value="word" />
           <el-option label="Markdown" value="md" />
           <el-option label="TXT" value="txt" />
         </el-select>
@@ -114,7 +114,7 @@ const kbDocs = ref([])
 const prompt = ref('')
 const llmConfigs = ref([])
 const selectedConfigId = ref(null)
-const outputType = ref('docx')
+const outputType = ref('word')
 const processing = ref(false)
 const outputs = ref([])
 

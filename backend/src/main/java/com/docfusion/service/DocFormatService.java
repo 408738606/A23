@@ -91,9 +91,16 @@ public class DocFormatService {
     }
 
     private String normalizeOutputType(String outputType, String fallbackExt) {
-        String t = outputType == null ? "" : outputType.toLowerCase();
+        String t = outputType == null ? "" : outputType.toLowerCase().trim();
+        if ("word".equals(t) || "doc".equals(t)) return "docx";
+        if ("markdown".equals(t)) return "md";
+        if ("text".equals(t) || "plain".equals(t)) return "txt";
         if ("docx".equals(t) || "md".equals(t) || "txt".equals(t)) return t;
-        if ("docx".equals(fallbackExt) || "md".equals(fallbackExt) || "txt".equals(fallbackExt)) return fallbackExt;
+
+        String fb = fallbackExt == null ? "" : fallbackExt.toLowerCase().trim();
+        if ("docx".equals(fb) || "doc".equals(fb)) return "docx";
+        if ("md".equals(fb)) return "md";
+        if ("txt".equals(fb)) return "txt";
         return "txt";
     }
 
