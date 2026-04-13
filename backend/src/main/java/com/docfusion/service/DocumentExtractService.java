@@ -3,6 +3,7 @@ package com.docfusion.service;
 import com.docfusion.config.AppConfig;
 import com.docfusion.model.KnowledgeDocument;
 import com.docfusion.model.KnowledgeDocumentRepo;
+import org.apache.tika.Tika;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xwpf.usermodel.*;
 import org.slf4j.Logger;
@@ -21,6 +22,7 @@ import java.util.*;
 public class DocumentExtractService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentExtractService.class);
+    private final Tika tika = new Tika();
 
     @Autowired private KnowledgeDocumentRepo docRepo;
     @Autowired private AppConfig appConfig;
@@ -93,8 +95,10 @@ public class DocumentExtractService {
         File f = new File(filePath);
         switch (ext) {
             case "docx": return extractDocx(f);
+            case "doc": return extractByTika(f);
             case "xlsx": case "xls": return extractExcel(f);
-            default: return extractPlainText(f);
+            case "md": case "txt": return extractPlainText(f);
+            default: return extractByTika(f);
         }
     }
 
@@ -139,6 +143,16 @@ public class DocumentExtractService {
 
     private String extractPlainText(File file) throws IOException {
         return Files.readString(file.toPath(), StandardCharsets.UTF_8);
+    }
+
+    private String extractByTika(File file) throws IOException {
+        try {
+            String txt = tika.parseToString(file);
+            return txt == null ? "" : txt;
+        } catch (Exception e) {
+            log.warn("Tika extraction failed for {}: {}", file.getName(), e.getMessage());
+            return "";
+        }
     }
 
     private String saveFile(MultipartFile file, String dir) throws IOException {

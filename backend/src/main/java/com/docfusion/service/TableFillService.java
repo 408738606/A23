@@ -24,7 +24,10 @@ public class TableFillService {
     private static final int CHUNK_SIZE = 8000;
     private static final int MAX_TEMPLATE_CHARS = 12000;
     private static final int MAX_REQUIREMENT_CHARS = 6000;
+    private static final int MAX_REQUIREMENT_ANALYSIS_CHARS = 2400;
     private static final int MAX_SUMMARY_CHARS = 1800;
+    private static final int MAX_FACTS_CHARS = 14000;
+    private static final int REQUIREMENT_ANALYSIS_MAX_TOKENS = 1536;
     private static final int SUMMARY_MAX_TOKENS = 2048;
     private static final int FINAL_GENERATION_MAX_TOKENS = 4096;
 
@@ -122,6 +125,7 @@ public class TableFillService {
             for (Long id : kbDocIds) {
                 docRepo.findById(id).ifPresent(doc -> {
                     sb.append("【知识库文档: ").append(doc.getFileName()).append("】\n");
+                    sb.append("文件类型: ").append(doc.getFileType()).append("\n");
                     if (doc.getExtractedText() != null && !doc.getExtractedText().isBlank()) {
                         sb.append(doc.getExtractedText()).append("\n\n");
                     } else {
@@ -140,6 +144,7 @@ public class TableFillService {
                 try {
                     String txt = extractService.extractText(tmp, ext);
                     sb.append("【本地文件: ").append(name).append("】\n");
+                    sb.append("文件类型: ").append(ext).append("\n");
                     sb.append(txt).append("\n\n");
                 } finally {
                     try { Files.deleteIfExists(Paths.get(tmp)); } catch (Exception ignored) {}
@@ -163,55 +168,81 @@ public class TableFillService {
                                           String requirementText,
                                           String ext) throws Exception {
         String templateSnippet = clampText(templateText, MAX_TEMPLATE_CHARS, "模板内容");
+        String requirementAnalysis = analyzeRequirementDocument(config, requirementText, templateSnippet, ext);
         List<String> sourceChunks = splitIntoChunks(sourceText, CHUNK_SIZE);
         if (sourceChunks.isEmpty()) sourceChunks = List.of("");
 
-        StringBuilder condensedSource = new StringBuilder();
+        StringBuilder condensedFacts = new StringBuilder();
         for (int i = 0; i < sourceChunks.size(); i++) {
             String chunk = sourceChunks.get(i);
-            String summarizePrompt = "你是文档信息提炼助手。请从以下数据源片段中提炼与模板填写最相关的信息。\n\n"
-                    + ((requirementText != null && !requirementText.isBlank()) ? "# 用户要求\n" + requirementText + "\n\n" : "")
+            String summarizePrompt = "你是结构化信息抽取助手。请提炼可直接用于填写目标文档的事实数据。\n\n"
+                    + ((requirementAnalysis != null && !requirementAnalysis.isBlank()) ? "# 任务要求解析\n" + requirementAnalysis + "\n\n" : "")
                     + "# 模板内容（摘要）\n" + templateSnippet + "\n\n"
                     + "# 数据源片段（第 " + (i + 1) + "/" + sourceChunks.size() + " 段）\n" + chunk + "\n\n"
                     + "输出要求：\n"
-                    + "1) 只输出可用于填写模板的事实信息\n"
-                    + "2) 按要点列出，避免重复\n"
-                    + "3) 若无有效信息仅输出“无有效信息”\n"
-                    + "4) 输出不超过 800 字";
+                    + "1) 只保留“事实数据”，禁止生成推测内容\n"
+                    + "2) 如果内容来自表格（xlsx/xls提取文本），尽量还原为“字段: 值”形式\n"
+                    + "3) 按“主题 | 字段 | 值 | 证据片段”输出要点\n"
+                    + "4) 若无有效信息仅输出“无有效信息”\n"
+                    + "5) 输出不超过 800 字";
 
             List<Map<String, String>> summarizeMessages = List.of(
-                    Map.of("role", "system", "content", "你是严谨的信息提炼助手。"),
+                    Map.of("role", "system", "content", "你是严谨的数据抽取助手。"),
                     Map.of("role", "user", "content", summarizePrompt)
             );
 
             String summary = llmService.chatLong(cloneConfigWithFixedTokens(config, SUMMARY_MAX_TOKENS), summarizeMessages);
             String cleanedSummary = clampText(summary, MAX_SUMMARY_CHARS, "片段摘要");
             if (!cleanedSummary.isBlank() && !"无有效信息".equals(cleanedSummary.trim())) {
-                condensedSource.append("## 片段").append(i + 1).append("\n")
+                condensedFacts.append("## 片段").append(i + 1).append("\n")
                         .append(cleanedSummary).append("\n\n");
             }
         }
 
-        String sourceForFinal = condensedSource.length() > 0
-                ? condensedSource.toString()
+        String sourceFacts = condensedFacts.length() > 0
+                ? clampText(condensedFacts.toString(), MAX_FACTS_CHARS, "提炼事实")
                 : clampText(sourceText, CHUNK_SIZE, "数据源");
 
         String prompt = "你是文档填写助手。请根据模板结构与用户要求生成最终文档内容。\n\n"
-                + ((requirementText != null && !requirementText.isBlank()) ? "# 用户要求\n" + requirementText + "\n\n" : "")
+                + ((requirementAnalysis != null && !requirementAnalysis.isBlank()) ? "# 用户要求解析\n" + requirementAnalysis + "\n\n" : "")
                 + "# 模板内容\n" + templateSnippet + "\n\n"
-                + "# 数据源（分段提炼后）\n" + sourceForFinal + "\n\n"
+                + "# 数据源事实（分段提炼后）\n" + sourceFacts + "\n\n"
                 + "输出要求：\n"
                 + "1) 严格基于数据源和用户要求，不编造\n"
                 + "2) 保持模板的章节/字段语义\n"
                 + "3) 直接输出最终文档正文，不要额外解释\n"
                 + "4) 输出语言与模板保持一致\n"
-                + "5) 当前目标格式: " + ext;
+                + "5) 若模板是docx/txt/md，按模板逻辑补全内容并输出可直接落盘的正文\n"
+                + "6) 当前目标格式: " + ext;
 
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", "你是专业的文档生成与排版助手。"),
                 Map.of("role", "user", "content", prompt)
         );
         return llmService.chatLong(cloneConfigWithFixedTokens(config, FINAL_GENERATION_MAX_TOKENS), messages);
+    }
+
+    private String analyzeRequirementDocument(LlmConfig config,
+                                              String requirementText,
+                                              String templateSnippet,
+                                              String ext) throws Exception {
+        if (requirementText == null || requirementText.isBlank()) return "";
+        String reqSnippet = clampText(requirementText, MAX_REQUIREMENT_CHARS, "用户要求");
+        String prompt = "你是任务分析助手。请分析用户要求文档，并输出可执行的填写规则。\n\n"
+                + "# 用户要求文档\n" + reqSnippet + "\n\n"
+                + "# 模板摘要\n" + templateSnippet + "\n\n"
+                + "输出要求：\n"
+                + "1) 总结目标文档类型与核心任务\n"
+                + "2) 提取必须满足的字段/结构/格式约束\n"
+                + "3) 提取优先级、过滤条件、计算规则（如有）\n"
+                + "4) 输出为简洁条目，禁止无关解释\n"
+                + "5) 目标输出格式: " + ext;
+        List<Map<String, String>> messages = List.of(
+                Map.of("role", "system", "content", "你是严谨的任务需求分析助手。"),
+                Map.of("role", "user", "content", prompt)
+        );
+        String analyzed = llmService.chatLong(cloneConfigWithFixedTokens(config, REQUIREMENT_ANALYSIS_MAX_TOKENS), messages);
+        return clampText(analyzed, MAX_REQUIREMENT_ANALYSIS_CHARS, "用户要求解析");
     }
 
     private String writeGeneratedOutput(String ext, String content, String originalName) throws IOException {
