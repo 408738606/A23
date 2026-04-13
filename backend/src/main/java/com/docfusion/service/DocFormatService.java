@@ -76,7 +76,7 @@ public class DocFormatService {
 
     private ResolvedInput resolveInput(MultipartFile localFile, Long knowledgeDocId) throws Exception {
         if (localFile != null && !localFile.isEmpty()) {
-            String name = Optional.ofNullable(localFile.getOriginalFilename()).orElse("input.txt");
+            String name = sanitizeFilename(Optional.ofNullable(localFile.getOriginalFilename()).orElse("input.txt"));
             String ext = extractService.getExtension(name).toLowerCase();
             String temp = saveTempFile(localFile);
             return new ResolvedInput(temp, name, ext, true);
@@ -85,7 +85,7 @@ public class DocFormatService {
             KnowledgeDocument doc = docRepo.findById(knowledgeDocId)
                     .orElseThrow(() -> new RuntimeException("未找到知识库文档"));
             String ext = extractService.getExtension(doc.getFileName()).toLowerCase();
-            return new ResolvedInput(doc.getFilePath(), doc.getFileName(), ext, false);
+            return new ResolvedInput(ensureSafePath(doc.getFilePath()), sanitizeFilename(doc.getFileName()), ext, false);
         }
         throw new RuntimeException("请上传文档或从知识库选择文档");
     }
@@ -98,11 +98,12 @@ public class DocFormatService {
     }
 
     private String writeOutput(String content, String originalName, String ext) throws Exception {
-        String filename = System.currentTimeMillis() + "_formatted_" + baseName(originalName) + "." + ext;
+        String safeContent = content == null ? "" : content;
+        String filename = sanitizeFilename(System.currentTimeMillis() + "_formatted_" + baseName(originalName) + "." + ext);
         String outputPath = appConfig.getOutputPath() + File.separator + filename;
         if ("docx".equals(ext)) {
             try (XWPFDocument doc = new XWPFDocument()) {
-                for (String line : (content == null ? "" : content).split("\\r?\\n")) {
+                for (String line : safeContent.split("\\r?\\n")) {
                     XWPFParagraph p = doc.createParagraph();
                     XWPFRun run = p.createRun();
                     run.setText(line);
@@ -110,13 +111,13 @@ public class DocFormatService {
                 try (FileOutputStream fos = new FileOutputStream(outputPath)) { doc.write(fos); }
             }
         } else {
-            Files.writeString(Paths.get(outputPath), content == null ? "" : content, StandardCharsets.UTF_8);
+            Files.writeString(Paths.get(outputPath), safeContent, StandardCharsets.UTF_8);
         }
         return outputPath;
     }
 
     private String saveTempFile(MultipartFile file) throws Exception {
-        String filename = System.currentTimeMillis() + "_docfmt_" + file.getOriginalFilename();
+        String filename = System.currentTimeMillis() + "_docfmt_" + sanitizeFilename(file.getOriginalFilename());
         Path dest = Paths.get(appConfig.getUploadTempPath(), filename);
         Files.copy(file.getInputStream(), dest, StandardCopyOption.REPLACE_EXISTING);
         return dest.toString();
@@ -125,6 +126,20 @@ public class DocFormatService {
     private String baseName(String name) {
         int idx = name.lastIndexOf('.');
         return idx > 0 ? name.substring(0, idx) : name;
+    }
+
+    private String sanitizeFilename(String name) {
+        String raw = (name == null || name.isBlank()) ? "file.txt" : name;
+        String sanitized = raw.replaceAll("[\\\\/:*?\"<>|]+", "_").replace("..", "_");
+        return sanitized.isBlank() ? "file.txt" : sanitized;
+    }
+
+    private String ensureSafePath(String rawPath) {
+        Path normalized = Paths.get(rawPath).normalize().toAbsolutePath();
+        Path kb = Paths.get(appConfig.getKnowledgeBasePath()).normalize().toAbsolutePath();
+        Path temp = Paths.get(appConfig.getUploadTempPath()).normalize().toAbsolutePath();
+        if (normalized.startsWith(kb) || normalized.startsWith(temp)) return normalized.toString();
+        throw new RuntimeException("文档路径不安全，拒绝访问");
     }
 
     private record ResolvedInput(String path, String originalName, String ext, boolean cleanup) {}

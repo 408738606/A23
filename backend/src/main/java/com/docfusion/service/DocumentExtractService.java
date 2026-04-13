@@ -27,7 +27,7 @@ public class DocumentExtractService {
 
     public KnowledgeDocument saveAndExtract(MultipartFile file, String category,
                                              String libraryType, String subDatabase) throws IOException {
-        String originalName = file.getOriginalFilename();
+        String originalName = sanitizeFilename(file.getOriginalFilename());
         String ext = getExtension(originalName).toLowerCase();
         String savedPath = saveFile(file, appConfig.getKnowledgeBasePath());
 
@@ -51,11 +51,12 @@ public class DocumentExtractService {
                                                        String category,
                                                        String libraryType,
                                                        String subDatabase) throws IOException {
-        String ext = getExtension(originalName).toLowerCase();
-        String savedPath = saveFileFromPath(sourcePath, originalName, appConfig.getKnowledgeBasePath());
+        String safeOriginalName = sanitizeFilename(originalName);
+        String ext = getExtension(safeOriginalName).toLowerCase();
+        String savedPath = saveFileFromPath(sourcePath, safeOriginalName, appConfig.getKnowledgeBasePath());
 
         KnowledgeDocument doc = new KnowledgeDocument();
-        doc.setFileName(originalName);
+        doc.setFileName(safeOriginalName);
         doc.setFileType(ext);
         doc.setFilePath(savedPath);
         doc.setFileSize(new File(savedPath).length());
@@ -141,17 +142,23 @@ public class DocumentExtractService {
     }
 
     private String saveFile(MultipartFile file, String dir) throws IOException {
-        String filename = System.currentTimeMillis() + "_" + file.getOriginalFilename();
+        String filename = System.currentTimeMillis() + "_" + sanitizeFilename(file.getOriginalFilename());
         Path dest = Paths.get(dir, filename);
         Files.copy(file.getInputStream(), dest, StandardCopyOption.REPLACE_EXISTING);
         return dest.toString();
     }
 
     private String saveFileFromPath(String sourcePath, String originalName, String dir) throws IOException {
-        String filename = System.currentTimeMillis() + "_" + originalName;
+        String filename = System.currentTimeMillis() + "_" + sanitizeFilename(originalName);
         Path dest = Paths.get(dir, filename);
         Files.copy(Paths.get(sourcePath), dest, StandardCopyOption.REPLACE_EXISTING);
         return dest.toString();
+    }
+
+    private String sanitizeFilename(String name) {
+        String raw = (name == null || name.isBlank()) ? "file.txt" : name;
+        String sanitized = raw.replaceAll("[\\\\/:*?\"<>|]+", "_").replace("..", "_");
+        return sanitized.isBlank() ? "file.txt" : sanitized;
     }
 
     public String getExtension(String filename) {

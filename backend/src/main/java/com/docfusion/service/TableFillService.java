@@ -59,7 +59,10 @@ public class TableFillService {
         String description;
         if ("xlsx".equals(ext) || "xls".equals(ext)) {
             TemplateInfo tmpl = parseTemplateInfo(template.path, ext);
-            String fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
+            String fullSourceText = sourceText;
+            if (requirementText != null && !requirementText.isBlank()) {
+                fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
+            }
             List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText);
             outputPath = writeRowsToTemplate(template.path, ext, tmpl, allRows, template.originalName);
             description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
@@ -88,7 +91,7 @@ public class TableFillService {
 
     private ResolvedFile resolveTemplate(MultipartFile templateUpload, Long templateDocId) throws Exception {
         if (templateUpload != null && !templateUpload.isEmpty()) {
-            String original = Optional.ofNullable(templateUpload.getOriginalFilename()).orElse("template.txt");
+            String original = sanitizeFilename(Optional.ofNullable(templateUpload.getOriginalFilename()).orElse("template.txt"));
             String ext = extractService.getExtension(original).toLowerCase();
             String path = saveTempFile(templateUpload);
             return new ResolvedFile(path, original, ext, true);
@@ -96,7 +99,9 @@ public class TableFillService {
         if (templateDocId != null) {
             KnowledgeDocument doc = docRepo.findById(templateDocId)
                     .orElseThrow(() -> new RuntimeException("未找到模板文档"));
-            return new ResolvedFile(doc.getFilePath(), doc.getFileName(),
+            String safePath = ensureSafePath(doc.getFilePath());
+            String safeName = sanitizeFilename(doc.getFileName());
+            return new ResolvedFile(safePath, safeName,
                     extractService.getExtension(doc.getFileName()).toLowerCase(), false);
         }
         throw new RuntimeException("请上传模板文件或从知识库选择模板");
@@ -122,7 +127,7 @@ public class TableFillService {
         if (localFiles != null) {
             for (MultipartFile f : localFiles) {
                 if (f == null || f.isEmpty()) continue;
-                String name = Optional.ofNullable(f.getOriginalFilename()).orElse("local-file.txt");
+                String name = sanitizeFilename(Optional.ofNullable(f.getOriginalFilename()).orElse("local-file.txt"));
                 String ext = extractService.getExtension(name).toLowerCase();
                 String tmp = saveTempFile(f);
                 try {
@@ -169,7 +174,7 @@ public class TableFillService {
     }
 
     private String writeGeneratedOutput(String ext, String content, String originalName) throws IOException {
-        String outName = System.currentTimeMillis() + "_filled_" + originalName;
+        String outName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + originalName);
         String outPath = appConfig.getOutputPath() + File.separator + outName;
 
         if ("docx".equals(ext)) {
@@ -229,6 +234,7 @@ public class TableFillService {
                                                       String requirementText) throws Exception {
         List<Map<String, String>> allRows = new ArrayList<>();
         List<String> chunks = splitIntoChunks(fullSourceText, CHUNK_SIZE);
+        if (chunks.isEmpty()) return allRows;
 
         String headersJson = objectMapper.writeValueAsString(tmpl.headers);
         Set<String> seen = new LinkedHashSet<>();
@@ -347,7 +353,7 @@ public class TableFillService {
     private String writeRowsToTemplate(String templatePath, String ext,
                                        TemplateInfo tmpl, List<Map<String, String>> rows,
                                        String originalName) throws IOException {
-        String outputFileName = System.currentTimeMillis() + "_filled_" + originalName;
+        String outputFileName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + originalName);
         String outputPath = appConfig.getOutputPath() + File.separator + outputFileName;
 
         if ("xlsx".equals(ext) || "xls".equals(ext)) writeExcel(templatePath, outputPath, tmpl, rows);
@@ -451,10 +457,7 @@ public class TableFillService {
 
     private List<String> splitIntoChunks(String text, int chunkSize) {
         List<String> chunks = new ArrayList<>();
-        if (text == null || text.isBlank()) {
-            chunks.add("");
-            return chunks;
-        }
+        if (text == null || text.isBlank()) return chunks;
         if (text.length() <= chunkSize) {
             chunks.add(text);
             return chunks;
@@ -470,7 +473,7 @@ public class TableFillService {
             }
             chunks.add(text.substring(start, end));
             if (end >= len) break;
-            int nextStart = Math.max(end - overlap, start + 1);
+            int nextStart = Math.max(end - overlap + 1, start + 1);
             start = nextStart;
         }
         return chunks;
@@ -492,10 +495,24 @@ public class TableFillService {
     }
 
     private String saveTempFile(MultipartFile file) throws IOException {
-        String filename = System.currentTimeMillis() + "_temp_" + file.getOriginalFilename();
+        String filename = System.currentTimeMillis() + "_temp_" + sanitizeFilename(file.getOriginalFilename());
         Path dest = Paths.get(appConfig.getUploadTempPath(), filename);
         Files.copy(file.getInputStream(), dest, StandardCopyOption.REPLACE_EXISTING);
         return dest.toString();
+    }
+
+    private String sanitizeFilename(String name) {
+        String raw = (name == null || name.isBlank()) ? "file.txt" : name;
+        String sanitized = raw.replaceAll("[\\\\/:*?\"<>|]+", "_").replace("..", "_");
+        return sanitized.isBlank() ? "file.txt" : sanitized;
+    }
+
+    private String ensureSafePath(String rawPath) {
+        Path normalized = Paths.get(rawPath).normalize().toAbsolutePath();
+        Path kb = Paths.get(appConfig.getKnowledgeBasePath()).normalize().toAbsolutePath();
+        Path temp = Paths.get(appConfig.getUploadTempPath()).normalize().toAbsolutePath();
+        if (normalized.startsWith(kb) || normalized.startsWith(temp)) return normalized.toString();
+        throw new RuntimeException("模板路径不安全，拒绝访问");
     }
 
     private record ResolvedFile(String path, String originalName, String ext, boolean cleanup) {}
