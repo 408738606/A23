@@ -25,6 +25,8 @@ public class TableFillService {
     private static final int MAX_TEMPLATE_CHARS = 12000;
     private static final int MAX_REQUIREMENT_CHARS = 6000;
     private static final int MAX_SUMMARY_CHARS = 1800;
+    private static final int SUMMARY_MAX_TOKENS = 2048;
+    private static final int FINAL_GENERATION_MAX_TOKENS = 4096;
 
     @Autowired private LlmService llmService;
     @Autowired private DocumentExtractService extractService;
@@ -182,7 +184,7 @@ public class TableFillService {
                     Map.of("role", "user", "content", summarizePrompt)
             );
 
-            String summary = llmService.chatLong(cloneConfigWithFixedTokens(config, 2048), summarizeMessages);
+            String summary = llmService.chatLong(cloneConfigWithFixedTokens(config, SUMMARY_MAX_TOKENS), summarizeMessages);
             String cleanedSummary = clampText(summary, MAX_SUMMARY_CHARS, "片段摘要");
             if (!cleanedSummary.isBlank() && !"无有效信息".equals(cleanedSummary.trim())) {
                 condensedSource.append("## 片段").append(i + 1).append("\n")
@@ -209,7 +211,7 @@ public class TableFillService {
                 Map.of("role", "system", "content", "你是专业的文档生成与排版助手。"),
                 Map.of("role", "user", "content", prompt)
         );
-        return llmService.chatLong(cloneConfigWithFixedTokens(config, 4096), messages);
+        return llmService.chatLong(cloneConfigWithFixedTokens(config, FINAL_GENERATION_MAX_TOKENS), messages);
     }
 
     private String writeGeneratedOutput(String ext, String content, String originalName) throws IOException {
@@ -554,7 +556,11 @@ public class TableFillService {
 
     private String clampText(String text, int maxChars, String name) {
         if (text == null) return "";
-        if (maxChars <= 0 || text.length() <= maxChars) return text;
+        if (maxChars <= 0) {
+            log.warn("{} 的截断配置无效（maxChars={}），按空文本处理", name, maxChars);
+            return "";
+        }
+        if (text.length() <= maxChars) return text;
         log.warn("{}过长，已截断：{} -> {} 字符", name, text.length(), maxChars);
         return text.substring(0, maxChars) + "\n\n[...内容已截断...]";
     }
