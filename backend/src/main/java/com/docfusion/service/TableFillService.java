@@ -21,7 +21,10 @@ import java.util.*;
 public class TableFillService {
 
     private static final Logger log = LoggerFactory.getLogger(TableFillService.class);
-    private static final int CHUNK_SIZE = 12000;
+    private static final int CHUNK_SIZE = 8000;
+    private static final int MAX_TEMPLATE_CHARS = 12000;
+    private static final int MAX_REQUIREMENT_CHARS = 6000;
+    private static final int MAX_SUMMARY_CHARS = 1800;
 
     @Autowired private LlmService llmService;
     @Autowired private DocumentExtractService extractService;
@@ -53,7 +56,9 @@ public class TableFillService {
         String ext = template.ext;
 
         String sourceText = buildCombinedText(sourceDocIds, sourceFiles, "数据源");
-        String requirementText = buildCombinedText(requirementDocIds, requirementFiles, "用户要求");
+        String requirementText = clampText(
+                buildCombinedText(requirementDocIds, requirementFiles, "用户要求"),
+                MAX_REQUIREMENT_CHARS, "用户要求");
 
         String outputPath;
         String description;
@@ -155,10 +160,44 @@ public class TableFillService {
                                           String sourceText,
                                           String requirementText,
                                           String ext) throws Exception {
+        String templateSnippet = clampText(templateText, MAX_TEMPLATE_CHARS, "模板内容");
+        List<String> sourceChunks = splitIntoChunks(sourceText, CHUNK_SIZE);
+        if (sourceChunks.isEmpty()) sourceChunks = List.of("");
+
+        StringBuilder condensedSource = new StringBuilder();
+        for (int i = 0; i < sourceChunks.size(); i++) {
+            String chunk = sourceChunks.get(i);
+            String summarizePrompt = "你是文档信息提炼助手。请从以下数据源片段中提炼与模板填写最相关的信息。\n\n"
+                    + ((requirementText != null && !requirementText.isBlank()) ? "# 用户要求\n" + requirementText + "\n\n" : "")
+                    + "# 模板内容（摘要）\n" + templateSnippet + "\n\n"
+                    + "# 数据源片段（第 " + (i + 1) + "/" + sourceChunks.size() + " 段）\n" + chunk + "\n\n"
+                    + "输出要求：\n"
+                    + "1) 只输出可用于填写模板的事实信息\n"
+                    + "2) 按要点列出，避免重复\n"
+                    + "3) 若无有效信息仅输出“无有效信息”\n"
+                    + "4) 输出不超过 800 字";
+
+            List<Map<String, String>> summarizeMessages = List.of(
+                    Map.of("role", "system", "content", "你是严谨的信息提炼助手。"),
+                    Map.of("role", "user", "content", summarizePrompt)
+            );
+
+            String summary = llmService.chatLong(cloneConfigWithFixedTokens(config, 2048), summarizeMessages);
+            String cleanedSummary = clampText(summary, MAX_SUMMARY_CHARS, "片段摘要");
+            if (!cleanedSummary.isBlank() && !"无有效信息".equals(cleanedSummary.trim())) {
+                condensedSource.append("## 片段").append(i + 1).append("\n")
+                        .append(cleanedSummary).append("\n\n");
+            }
+        }
+
+        String sourceForFinal = condensedSource.length() > 0
+                ? condensedSource.toString()
+                : clampText(sourceText, CHUNK_SIZE, "数据源");
+
         String prompt = "你是文档填写助手。请根据模板结构与用户要求生成最终文档内容。\n\n"
                 + ((requirementText != null && !requirementText.isBlank()) ? "# 用户要求\n" + requirementText + "\n\n" : "")
-                + "# 模板内容\n" + templateText + "\n\n"
-                + "# 数据源\n" + sourceText + "\n\n"
+                + "# 模板内容\n" + templateSnippet + "\n\n"
+                + "# 数据源（分段提炼后）\n" + sourceForFinal + "\n\n"
                 + "输出要求：\n"
                 + "1) 严格基于数据源和用户要求，不编造\n"
                 + "2) 保持模板的章节/字段语义\n"
@@ -170,7 +209,7 @@ public class TableFillService {
                 Map.of("role", "system", "content", "你是专业的文档生成与排版助手。"),
                 Map.of("role", "user", "content", prompt)
         );
-        return llmService.chatLong(cloneConfigWithHigherTokens(config, 8192), messages);
+        return llmService.chatLong(cloneConfigWithFixedTokens(config, 4096), messages);
     }
 
     private String writeGeneratedOutput(String ext, String content, String originalName) throws IOException {
@@ -496,6 +535,28 @@ public class TableFillService {
         clone.setIsDefault(original.getIsDefault());
         clone.setIsActive(original.getIsActive());
         return clone;
+    }
+
+    private LlmConfig cloneConfigWithFixedTokens(LlmConfig original, int tokens) {
+        LlmConfig clone = new LlmConfig();
+        clone.setId(original.getId());
+        clone.setConfigName(original.getConfigName());
+        clone.setProvider(original.getProvider());
+        clone.setBaseUrl(original.getBaseUrl());
+        clone.setApiKey(original.getApiKey());
+        clone.setModelName(original.getModelName());
+        clone.setTemperature(original.getTemperature());
+        clone.setMaxTokens(Math.max(256, tokens));
+        clone.setIsDefault(original.getIsDefault());
+        clone.setIsActive(original.getIsActive());
+        return clone;
+    }
+
+    private String clampText(String text, int maxChars, String name) {
+        if (text == null) return "";
+        if (maxChars <= 0 || text.length() <= maxChars) return text;
+        log.warn("{}过长，已截断：{} -> {} 字符", name, text.length(), maxChars);
+        return text.substring(0, maxChars) + "\n\n[...内容已截断...]";
     }
 
     private String saveTempFile(MultipartFile file) throws IOException {
