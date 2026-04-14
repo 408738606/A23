@@ -76,12 +76,20 @@ public class TableFillController {
         } catch (Exception e) {
             log.error("Table fill error", e);
             String msg = e.getMessage() == null ? "未知错误" : e.getMessage();
-            if (msg.contains("Insufficient Balance")) {
+            if (isInsufficientBalanceError(msg)) {
                 msg = "模型余额不足（Insufficient Balance），请切换本地模型（如 Ollama）或充值后重试";
             }
             return ResponseEntity.internalServerError().body(
                     Map.of("success", false, "message", "填写失败: " + msg));
         }
+    }
+
+    private boolean isInsufficientBalanceError(String message) {
+        if (message == null || message.isBlank()) return false;
+        String m = message.toLowerCase();
+        return (m.contains("402") && m.contains("balance"))
+                || m.contains("insufficient balance")
+                || m.contains("payment required");
     }
 
     @GetMapping("/outputs")

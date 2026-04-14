@@ -247,7 +247,7 @@ public class TableFillService {
             return ensureNonEmptyGenerated(generated, templateSnippet, sourceFacts);
         } catch (Exception e) {
             log.warn("最终文档生成失败，启用兜底输出: {}", e.getMessage());
-            return buildDeterministicFallbackDocument(templateSnippet, sourceFacts, requirementText, ext, e.getMessage());
+            return buildDeterministicFallbackDocument(templateSnippet, sourceFacts, requirementText, ext);
         }
     }
 
@@ -339,13 +339,12 @@ public class TableFillService {
     private String buildDeterministicFallbackDocument(String templateSnippet,
                                                       String sourceFacts,
                                                       String requirementText,
-                                                      String ext,
-                                                      String reason) {
+                                                      String ext) {
         StringBuilder sb = new StringBuilder();
         if ("md".equalsIgnoreCase(ext)) {
             sb.append("# 自动降级输出\n\n");
             sb.append("> 模型调用失败，已降级为规则化输出。\n");
-            if (reason != null && !reason.isBlank()) sb.append("> 失败原因：").append(reason).append("\n");
+            sb.append("> 失败原因：服务调用异常（详见后端日志）。\n");
             sb.append("\n## 用户要求\n").append(clampText(requirementText, 3000, "要求兜底")).append("\n\n");
             sb.append("## 模板摘要\n").append(clampText(templateSnippet, 5000, "模板兜底")).append("\n\n");
             sb.append("## 数据源事实\n").append(clampText(sourceFacts, 12000, "事实兜底")).append("\n");
@@ -353,7 +352,7 @@ public class TableFillService {
         }
         sb.append("【自动降级输出】\n");
         sb.append("模型调用失败，已降级为规则化输出。\n");
-        if (reason != null && !reason.isBlank()) sb.append("失败原因：").append(reason).append("\n");
+        sb.append("失败原因：服务调用异常（详见后端日志）。\n");
         sb.append("\n【用户要求】\n").append(clampText(requirementText, 3000, "要求兜底")).append("\n");
         sb.append("\n【模板摘要】\n").append(clampText(templateSnippet, 5000, "模板兜底")).append("\n");
         sb.append("\n【数据源事实】\n").append(clampText(sourceFacts, 12000, "事实兜底")).append("\n");
@@ -676,6 +675,8 @@ public class TableFillService {
     private List<String> splitIntoChunks(String text, int chunkSize) {
         List<String> chunks = new ArrayList<>();
         if (text == null || text.isBlank()) return chunks;
+        int safeChunkSize = Math.max(1, chunkSize);
+        int safeOverlap = Math.max(0, Math.min(CHUNK_OVERLAP, safeChunkSize - 1));
         if (text.length() <= chunkSize) {
             chunks.add(text);
             return chunks;
@@ -683,14 +684,15 @@ public class TableFillService {
         int start = 0;
         int len = text.length();
         while (start < len) {
-            int end = Math.min(start + chunkSize, len);
+            int end = Math.min(start + safeChunkSize, len);
             if (end < len) {
                 int nlPos = text.lastIndexOf('\n', end);
-                if (nlPos > start + chunkSize / 2) end = nlPos + 1;
+                if (nlPos > start + safeChunkSize / 2) end = nlPos + 1;
             }
             chunks.add(text.substring(start, end));
             if (end >= len) break;
-            int nextStart = Math.max(end - CHUNK_OVERLAP, start + 1);
+            int nextStart = Math.max(end - safeOverlap, start + 1);
+            // 防止在极端参数下出现 nextStart 不前进导致死循环
             if (nextStart <= start) break;
             start = nextStart;
         }
@@ -747,7 +749,10 @@ public class TableFillService {
 
     private String sanitizeFilename(String name) {
         String raw = (name == null || name.isBlank()) ? "file.txt" : name;
-        String sanitized = raw.replaceAll("[\\\\/:*?\"<>|]+", "_").replace("..", "_");
+        String sanitized = raw
+                .replaceAll("[\\p{Cntrl}]+", "_")
+                .replaceAll("[\\\\/:*?\"<>|]+", "_")
+                .replace("..", "_");
         return sanitized.isBlank() ? "file.txt" : sanitized;
     }
 
