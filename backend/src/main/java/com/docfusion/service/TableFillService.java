@@ -818,8 +818,6 @@ public class TableFillService {
             chunks.add(text.substring(start, end));
             if (end >= len) break;
             int nextStart = Math.max(end - safeOverlap, start + 1);
-            // 防止在极端参数下出现 nextStart 不前进导致死循环
-            if (nextStart <= start) break;
             start = nextStart;
         }
         return chunks;
@@ -862,7 +860,7 @@ public class TableFillService {
             return "";
         }
         if (text.length() <= maxChars) return text;
-        log.warn("{}过长，已截断：{} -> {} 字符", name, text.length(), maxChars);
+        log.warn("{} 过长，已截断：{} -> {} 字符", name, text.length(), maxChars);
         return text.substring(0, maxChars) + "\n\n[...内容已截断...]";
     }
 
