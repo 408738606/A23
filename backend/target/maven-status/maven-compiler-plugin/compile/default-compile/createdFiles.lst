@@ -1,0 +1,8 @@
+com/docfusion/service/DocFormatService$ResolvedInput.class
+com/docfusion/service/TableFillService$ResolvedFile.class
+com/docfusion/service/DocumentExtractService.class
+com/docfusion/service/DocFormatService.class
+com/docfusion/service/TableFillService.class
+com/docfusion/service/TableFillService$TemplateInfo.class
+com/docfusion/controller/DocFormatController.class
+com/docfusion/controller/TableFillController.class
