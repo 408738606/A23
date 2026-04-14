@@ -57,6 +57,7 @@ export const tableFillApi = {
     sourceFiles = [],
     requirementDocIds = [],
     requirementFiles = [],
+    outputType,
     llmConfigId,
     sessionId,
   }) => {
@@ -67,6 +68,7 @@ export const tableFillApi = {
     sourceFiles.forEach(f => fd.append('sourceFiles', f))
     requirementDocIds.forEach(id => fd.append('requirementDocIds', id))
     requirementFiles.forEach(f => fd.append('requirementFiles', f))
+    if (outputType) fd.append('outputType', outputType)
     if (llmConfigId) fd.append('llmConfigId', llmConfigId)
     if (sessionId) fd.append('sessionId', sessionId)
     return api.post('/table-fill/fill', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 })

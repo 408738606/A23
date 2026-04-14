@@ -33,6 +33,7 @@ public class TableFillController {
             @RequestParam(value = "sourceFiles", required = false) MultipartFile[] sourceFiles,
             @RequestParam(value = "requirementDocIds", required = false) List<Long> requirementDocIds,
             @RequestParam(value = "requirementFiles", required = false) MultipartFile[] requirementFiles,
+            @RequestParam(value = "outputType", required = false) String outputType,
             @RequestParam(value = "llmConfigId", required = false) Long llmConfigId,
             @RequestParam(value = "sessionId", required = false) String sessionId) {
         try {
@@ -48,9 +49,9 @@ public class TableFillController {
             }
             if (sessionId == null || sessionId.isBlank()) sessionId = UUID.randomUUID().toString();
 
-            log.info("Table fill: template={}, templateDocId={}, sourceDocs={}, localSources={}",
+            log.info("Table fill: template={}, templateDocId={}, sourceDocs={}, localSources={}, outputType={}",
                     template != null ? template.getOriginalFilename() : "KB",
-                    templateDocId, sourceDocIds, sourceFiles != null ? sourceFiles.length : 0);
+                    templateDocId, sourceDocIds, sourceFiles != null ? sourceFiles.length : 0, outputType);
             long start = System.currentTimeMillis();
 
             OutputFile result = tableFillService.fillTableFlexible(
@@ -60,6 +61,7 @@ public class TableFillController {
                     sourceFiles,
                     requirementDocIds != null ? requirementDocIds : List.of(),
                     requirementFiles,
+                    outputType,
                     llmConfigId,
                     sessionId);
 
@@ -73,8 +75,12 @@ public class TableFillController {
                     "message", result.getDescription() + "，耗时 " + (elapsed / 1000) + " 秒"));
         } catch (Exception e) {
             log.error("Table fill error", e);
+            String msg = e.getMessage() == null ? "未知错误" : e.getMessage();
+            if (msg.contains("Insufficient Balance")) {
+                msg = "模型余额不足（Insufficient Balance），请切换本地模型（如 Ollama）或充值后重试";
+            }
             return ResponseEntity.internalServerError().body(
-                    Map.of("success", false, "message", "填写失败: " + e.getMessage()));
+                    Map.of("success", false, "message", "填写失败: " + msg));
         }
     }
 

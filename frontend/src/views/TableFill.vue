@@ -119,7 +119,18 @@
         </div>
 
         <div class="panel-section">
-          <div class="section-title">④ 选择模型</div>
+          <div class="section-title">④ 选择输出格式</div>
+          <el-select v-model="outputType" style="width:100%">
+            <el-option label="自动（跟随模板）" value="auto" />
+            <el-option label="Excel (XLSX)" value="xlsx" />
+            <el-option label="Word (DOCX)" value="word" />
+            <el-option label="Markdown" value="md" />
+            <el-option label="TXT" value="txt" />
+          </el-select>
+        </div>
+
+        <div class="panel-section">
+          <div class="section-title">⑤ 选择模型</div>
           <el-select v-model="selectedConfigId" placeholder="选择大模型" style="width:100%">
             <el-option v-for="cfg in llmConfigs" :key="cfg.id" :label="`${cfg.configName} (${cfg.modelName})`" :value="cfg.id" />
           </el-select>
@@ -203,6 +214,7 @@ const requirementFileList = ref([])
 
 const llmConfigs = ref([])
 const selectedConfigId = ref(null)
+const outputType = ref('auto')
 const filling = ref(false)
 const outputs = ref([])
 
@@ -253,6 +265,7 @@ async function startFill() {
       sourceFiles: sourceFileList.value.map(f => f.raw),
       requirementDocIds: selectedRequirementIds.value,
       requirementFiles: requirementFileList.value.map(f => f.raw),
+      outputType: outputType.value,
       llmConfigId: selectedConfigId.value,
       sessionId: null,
     })

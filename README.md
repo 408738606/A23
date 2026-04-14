@@ -159,6 +159,53 @@ docfusion/
 
 ---
 
+## Excel → Word/Markdown/TXT 使用说明（已支持）
+
+### 方式一：前端页面
+1. 进入「表格填写」
+2. 模板选择 Excel（xlsx/xls）
+3. 在「输出格式」选择 `Word (DOCX)` / `Markdown` / `TXT`
+4. 选择模型并执行
+
+### 方式二：直接调用 API
+```bash
+curl -X POST "http://localhost:8080/api/table-fill/fill" \
+  -F "template=@/abs/path/to/template.xlsx" \
+  -F "sourceFiles=@/abs/path/to/source1.xlsx" \
+  -F "sourceFiles=@/abs/path/to/source2.md" \
+  -F "outputType=word" \
+  -F "llmConfigId=1"
+```
+
+`outputType` 支持：`auto`（跟随模板）/ `xlsx` / `word` / `md` / `txt`
+
+---
+
+## 长上下文调用方法（推荐）
+
+为覆盖长上下文，推荐使用本地 Ollama + 长上下文模型，并通过 `table-fill` 的分段抽取能力调用：
+
+1. 配置模型（设置页）  
+   - Provider: `ollama`  
+   - Base URL: `http://localhost:11434`  
+   - Model: 例如 `qwen2.5:14b-instruct`（或你本机可用的长上下文模型）  
+   - Max Tokens: 建议 `8192` 或更高（视显存与模型能力）
+
+2. 调用示例（大文件/长文本）：
+```bash
+curl -X POST "http://localhost:8080/api/table-fill/fill" \
+  -F "template=@/abs/path/to/template.xlsx" \
+  -F "sourceFiles=@/abs/path/to/very-large-source.docx" \
+  -F "sourceFiles=@/abs/path/to/very-large-source.xlsx" \
+  -F "requirementFiles=@/abs/path/to/requirement.md" \
+  -F "outputType=word" \
+  -F "llmConfigId=YOUR_OLLAMA_CONFIG_ID"
+```
+
+说明：后端会自动进行分段处理（chunk + overlap）并汇总，适合长上下文场景。若远程 API 出现余额不足（402），建议切换到本地 Ollama 配置重试。
+
+---
+
 ## 技术栈
 
 **后端：** Spring Boot 3.2 · JPA + H2 · Apache POI · OkHttp · Apache Tika  

@@ -46,7 +46,7 @@ public class TableFillService {
                                                  Long llmConfigId,
                                                  String sessionId) throws Exception {
         return fillTableFlexible(templateFile, null, sourceDocIds, null,
-                List.of(), null, llmConfigId, sessionId);
+                List.of(), null, null, llmConfigId, sessionId);
     }
 
     public OutputFile fillTableFlexible(MultipartFile templateUpload,
@@ -55,13 +55,15 @@ public class TableFillService {
                                         MultipartFile[] sourceFiles,
                                         List<Long> requirementDocIds,
                                         MultipartFile[] requirementFiles,
+                                        String outputType,
                                         Long llmConfigId,
                                         String sessionId) throws Exception {
         LlmConfig config = llmService.getConfigById(llmConfigId);
         if (config == null) throw new RuntimeException("未找到可用的模型配置，请先在设置中配置大模型");
 
         ResolvedFile template = resolveTemplate(templateUpload, templateDocId);
-        String ext = template.ext;
+        String templateExt = template.ext;
+        String targetExt = normalizeOutputType(outputType, templateExt);
 
         String sourceText = buildCombinedText(sourceDocIds, sourceFiles, "数据源");
         String requirementText = clampText(
@@ -70,29 +72,37 @@ public class TableFillService {
 
         String outputPath;
         String description;
-        if ("xlsx".equals(ext) || "xls".equals(ext)) {
-            TemplateInfo tmpl = parseTemplateInfo(template.path, ext);
-            String requirementAnalysis = analyzeRequirementDocument(config, requirementText, String.join(" | ", tmpl.headers), ext);
-            String fullSourceText = sourceText;
-            if (requirementText != null && !requirementText.isBlank()) {
-                fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
+        if ("xlsx".equals(templateExt) || "xls".equals(templateExt)) {
+            if ("xlsx".equals(targetExt) || "xls".equals(targetExt)) {
+                TemplateInfo tmpl = parseTemplateInfo(template.path, templateExt);
+                String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, String.join(" | ", tmpl.headers), targetExt);
+                String fullSourceText = sourceText;
+                if (requirementText != null && !requirementText.isBlank()) {
+                    fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
+                }
+                List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
+                outputPath = writeRowsToTemplate(template.path, targetExt, tmpl, allRows, template.originalName);
+                description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
+            } else {
+                String templateText = readTemplateAsText(template.path, templateExt);
+                String generated = generateNonExcelOutput(config, templateText, sourceText, requirementText, targetExt);
+                outputPath = writeGeneratedOutput(targetExt, generated, template.originalName);
+                description = "AI自动填写完成（Excel模板已转换为内容文档）";
             }
-            List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
-            outputPath = writeRowsToTemplate(template.path, ext, tmpl, allRows, template.originalName);
-            description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
         } else {
-            String templateText = readTemplateAsText(template.path, ext);
-            String generated = generateNonExcelOutput(config, templateText, sourceText, requirementText, ext);
-            outputPath = writeGeneratedOutput(ext, generated, template.originalName);
+            String templateText = readTemplateAsText(template.path, templateExt);
+            String generated = generateNonExcelOutput(config, templateText, sourceText, requirementText, targetExt);
+            outputPath = writeGeneratedOutput(targetExt, generated, template.originalName);
             description = "AI自动填写完成，已生成内容文档";
         }
 
         File outFile = new File(outputPath);
+        String finalFileName = "已填写_" + baseName(template.originalName) + "." + targetExt;
         OutputFile output = new OutputFile();
         output.setSessionId(sessionId);
-        output.setFileName("已填写_" + template.originalName);
+        output.setFileName(finalFileName);
         output.setFilePath(outputPath);
-        output.setFileType(ext);
+        output.setFileType(targetExt);
         output.setFileSize(outFile.length());
         output.setDescription(description);
         outputFileRepo.save(output);
@@ -172,7 +182,7 @@ public class TableFillService {
                                           String requirementText,
                                           String ext) throws Exception {
         String templateSnippet = clampText(templateText, MAX_TEMPLATE_CHARS, "模板内容");
-        String requirementAnalysis = analyzeRequirementDocument(config, requirementText, templateSnippet, ext);
+        String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, templateSnippet, ext);
         List<String> sourceChunks = splitIntoChunks(sourceText, CHUNK_SIZE);
         if (sourceChunks.isEmpty()) sourceChunks = List.of("");
 
@@ -195,11 +205,20 @@ public class TableFillService {
                     Map.of("role", "user", "content", summarizePrompt)
             );
 
-            String summary = llmService.chatLong(cloneConfigWithFixedTokens(config, SUMMARY_MAX_TOKENS), summarizeMessages);
-            String cleanedSummary = clampText(summary, MAX_SUMMARY_CHARS, "片段摘要");
-            if (!cleanedSummary.isBlank() && !"无有效信息".equals(cleanedSummary.trim())) {
-                condensedFacts.append("## 片段").append(i + 1).append("\n")
-                        .append(cleanedSummary).append("\n\n");
+            try {
+                String summary = llmService.chatLong(cloneConfigWithFixedTokens(config, SUMMARY_MAX_TOKENS), summarizeMessages);
+                String cleanedSummary = clampText(summary, MAX_SUMMARY_CHARS, "片段摘要");
+                if (!cleanedSummary.isBlank() && !"无有效信息".equals(cleanedSummary.trim())) {
+                    condensedFacts.append("## 片段").append(i + 1).append("\n")
+                            .append(cleanedSummary).append("\n\n");
+                }
+            } catch (Exception e) {
+                log.warn("片段 {} 摘要失败，使用截断原文兜底: {}", i + 1, e.getMessage());
+                String fallbackChunk = clampText(chunk, MAX_SUMMARY_CHARS, "片段兜底");
+                if (!fallbackChunk.isBlank()) {
+                    condensedFacts.append("## 片段").append(i + 1).append("\n")
+                            .append(fallbackChunk).append("\n\n");
+                }
             }
         }
 
@@ -223,8 +242,13 @@ public class TableFillService {
                 Map.of("role", "system", "content", "你是专业的文档生成与排版助手。"),
                 Map.of("role", "user", "content", prompt)
         );
-        String generated = llmService.chatLong(cloneConfigWithFixedTokens(config, FINAL_GENERATION_MAX_TOKENS), messages);
-        return ensureNonEmptyGenerated(generated, templateSnippet, sourceFacts);
+        try {
+            String generated = llmService.chatLong(cloneConfigWithFixedTokens(config, FINAL_GENERATION_MAX_TOKENS), messages);
+            return ensureNonEmptyGenerated(generated, templateSnippet, sourceFacts);
+        } catch (Exception e) {
+            log.warn("最终文档生成失败，启用兜底输出: {}", e.getMessage());
+            return buildDeterministicFallbackDocument(templateSnippet, sourceFacts, requirementText, ext, e.getMessage());
+        }
     }
 
     private String analyzeRequirementDocument(LlmConfig config,
@@ -250,6 +274,18 @@ public class TableFillService {
         return clampText(analyzed, MAX_REQUIREMENT_ANALYSIS_CHARS, "用户要求解析");
     }
 
+    private String analyzeRequirementDocumentSafe(LlmConfig config,
+                                                  String requirementText,
+                                                  String templateSnippet,
+                                                  String ext) {
+        try {
+            return analyzeRequirementDocument(config, requirementText, templateSnippet, ext);
+        } catch (Exception e) {
+            log.warn("用户要求解析失败，使用空解析继续: {}", e.getMessage());
+            return "";
+        }
+    }
+
     private String ensureNonEmptyGenerated(String generated, String templateSnippet, String sourceFacts) {
         if (generated != null && !generated.trim().isEmpty()) return generated;
         StringBuilder fallback = new StringBuilder();
@@ -266,7 +302,7 @@ public class TableFillService {
     }
 
     private String writeGeneratedOutput(String ext, String content, String originalName) throws IOException {
-        String outName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + originalName);
+        String outName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + baseName(originalName) + "." + ext);
         String outPath = appConfig.getOutputPath() + File.separator + outName;
 
         if ("docx".equals(ext)) {
@@ -282,6 +318,46 @@ public class TableFillService {
             Files.writeString(Paths.get(outPath), content == null ? "" : content, StandardCharsets.UTF_8);
         }
         return outPath;
+    }
+
+    private String normalizeOutputType(String outputType, String fallbackExt) {
+        String t = outputType == null ? "" : outputType.toLowerCase().trim();
+        if ("auto".equals(t) || t.isBlank()) t = fallbackExt == null ? "" : fallbackExt.toLowerCase().trim();
+        if ("word".equals(t) || "doc".equals(t)) return "docx";
+        if ("markdown".equals(t)) return "md";
+        if ("text".equals(t) || "plain".equals(t)) return "txt";
+        if ("xls".equals(t)) return "xlsx";
+        if ("xlsx".equals(t) || "docx".equals(t) || "md".equals(t) || "txt".equals(t)) return t;
+
+        String fb = fallbackExt == null ? "" : fallbackExt.toLowerCase().trim();
+        if ("xls".equals(fb)) return "xlsx";
+        if ("doc".equals(fb)) return "docx";
+        if ("xlsx".equals(fb) || "docx".equals(fb) || "md".equals(fb) || "txt".equals(fb)) return fb;
+        return "txt";
+    }
+
+    private String buildDeterministicFallbackDocument(String templateSnippet,
+                                                      String sourceFacts,
+                                                      String requirementText,
+                                                      String ext,
+                                                      String reason) {
+        StringBuilder sb = new StringBuilder();
+        if ("md".equalsIgnoreCase(ext)) {
+            sb.append("# 自动降级输出\n\n");
+            sb.append("> 模型调用失败，已降级为规则化输出。\n");
+            if (reason != null && !reason.isBlank()) sb.append("> 失败原因：").append(reason).append("\n");
+            sb.append("\n## 用户要求\n").append(clampText(requirementText, 3000, "要求兜底")).append("\n\n");
+            sb.append("## 模板摘要\n").append(clampText(templateSnippet, 5000, "模板兜底")).append("\n\n");
+            sb.append("## 数据源事实\n").append(clampText(sourceFacts, 12000, "事实兜底")).append("\n");
+            return sb.toString();
+        }
+        sb.append("【自动降级输出】\n");
+        sb.append("模型调用失败，已降级为规则化输出。\n");
+        if (reason != null && !reason.isBlank()) sb.append("失败原因：").append(reason).append("\n");
+        sb.append("\n【用户要求】\n").append(clampText(requirementText, 3000, "要求兜底")).append("\n");
+        sb.append("\n【模板摘要】\n").append(clampText(templateSnippet, 5000, "模板兜底")).append("\n");
+        sb.append("\n【数据源事实】\n").append(clampText(sourceFacts, 12000, "事实兜底")).append("\n");
+        return sb.toString();
     }
 
     private TemplateInfo parseTemplateInfo(String filePath, String ext) throws IOException {
@@ -673,6 +749,12 @@ public class TableFillService {
         String raw = (name == null || name.isBlank()) ? "file.txt" : name;
         String sanitized = raw.replaceAll("[\\\\/:*?\"<>|]+", "_").replace("..", "_");
         return sanitized.isBlank() ? "file.txt" : sanitized;
+    }
+
+    private String baseName(String name) {
+        if (name == null || name.isBlank()) return "file";
+        int idx = name.lastIndexOf('.');
+        return idx > 0 ? name.substring(0, idx) : name;
     }
 
     private String ensureSafePath(String rawPath) {
