@@ -28,6 +28,7 @@ public class TableFillService {
     private static final int MAX_REQUIREMENT_ANALYSIS_CHARS = 2400;
     private static final int MAX_SUMMARY_CHARS = 2200;
     private static final int MAX_FACTS_CHARS = 18000;
+    private static final int EXTRACTION_CHUNK_SIZE = 3600;
     private static final int REQUIREMENT_ANALYSIS_MAX_TOKENS = 1536;
     private static final int SUMMARY_MAX_TOKENS = 2048;
     private static final int FINAL_GENERATION_MAX_TOKENS = 6144;
@@ -73,21 +74,19 @@ public class TableFillService {
         String outputPath;
         String description;
         if ("xlsx".equals(templateExt) || "xls".equals(templateExt)) {
+            TemplateInfo tmpl = parseTemplateInfo(template.path, templateExt);
+            String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, String.join(" | ", tmpl.headers), targetExt);
+            String fullSourceText = sourceText;
+            if (requirementText != null && !requirementText.isBlank()) {
+                fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
+            }
+            List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
             if ("xlsx".equals(targetExt) || "xls".equals(targetExt)) {
-                TemplateInfo tmpl = parseTemplateInfo(template.path, templateExt);
-                String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, String.join(" | ", tmpl.headers), targetExt);
-                String fullSourceText = sourceText;
-                if (requirementText != null && !requirementText.isBlank()) {
-                    fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
-                }
-                List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
                 outputPath = writeRowsToTemplate(template.path, targetExt, tmpl, allRows, template.originalName);
                 description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
             } else {
-                String templateText = readTemplateAsText(template.path, templateExt);
-                String generated = generateNonExcelOutput(config, templateText, sourceText, requirementText, targetExt);
-                outputPath = writeGeneratedOutput(targetExt, generated, template.originalName);
-                description = "AI自动填写完成（Excel模板已转换为内容文档）";
+                outputPath = writeStructuredTableOutput(targetExt, tmpl, allRows, template.originalName);
+                description = String.format("AI自动填写完成（按%s表格格式输出），共提取 %d 行数据", targetExt, allRows.size());
             }
         } else {
             String templateText = readTemplateAsText(template.path, templateExt);
@@ -320,6 +319,128 @@ public class TableFillService {
         return outPath;
     }
 
+    private String writeStructuredTableOutput(String ext,
+                                              TemplateInfo tmpl,
+                                              List<Map<String, String>> rows,
+                                              String originalName) throws IOException {
+        String outName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + baseName(originalName) + "." + ext);
+        String outPath = appConfig.getOutputPath() + File.separator + outName;
+        if ("docx".equals(ext)) {
+            writeDocxTableOutput(outPath, tmpl.headers, rows);
+        } else if ("md".equals(ext)) {
+            Files.writeString(Paths.get(outPath), buildMarkdownTable(tmpl.headers, rows), StandardCharsets.UTF_8);
+        } else {
+            Files.writeString(Paths.get(outPath), buildTextTable(tmpl.headers, rows), StandardCharsets.UTF_8);
+        }
+        return outPath;
+    }
+
+    private void writeDocxTableOutput(String outputPath, List<String> headers, List<Map<String, String>> rows) throws IOException {
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph title = doc.createParagraph();
+            XWPFRun run = title.createRun();
+            run.setText("表格填写结果");
+
+            XWPFTable table = doc.createTable(Math.max(1, rows.size() + 1), Math.max(1, headers.size()));
+            XWPFTableRow headerRow = table.getRow(0);
+            for (int ci = 0; ci < headers.size(); ci++) {
+                headerRow.getCell(ci).removeParagraph(0);
+                headerRow.getCell(ci).setText(headers.get(ci));
+            }
+
+            for (int ri = 0; ri < rows.size(); ri++) {
+                Map<String, String> row = rows.get(ri);
+                XWPFTableRow tableRow = table.getRow(ri + 1);
+                for (int ci = 0; ci < headers.size(); ci++) {
+                    String h = headers.get(ci);
+                    String value = row.getOrDefault(h, "");
+                    tableRow.getCell(ci).removeParagraph(0);
+                    tableRow.getCell(ci).setText(value == null ? "" : value);
+                }
+            }
+            try (FileOutputStream fos = new FileOutputStream(outputPath)) { doc.write(fos); }
+        }
+    }
+
+    private String buildMarkdownTable(List<String> headers, List<Map<String, String>> rows) {
+        if (headers == null || headers.isEmpty()) return "| 内容 |\n|---|\n";
+        StringBuilder sb = new StringBuilder();
+        sb.append("| ");
+        for (int i = 0; i < headers.size(); i++) {
+            if (i > 0) sb.append(" | ");
+            sb.append(escapeMdCell(headers.get(i)));
+        }
+        sb.append(" |\n| ");
+        for (int i = 0; i < headers.size(); i++) {
+            if (i > 0) sb.append(" | ");
+            sb.append("---");
+        }
+        sb.append(" |\n");
+
+        for (Map<String, String> row : rows) {
+            sb.append("| ");
+            for (int i = 0; i < headers.size(); i++) {
+                if (i > 0) sb.append(" | ");
+                String val = row.getOrDefault(headers.get(i), "");
+                sb.append(escapeMdCell(val));
+            }
+            sb.append(" |\n");
+        }
+        return sb.toString();
+    }
+
+    private String escapeMdCell(String text) {
+        if (text == null) return "";
+        return text.replace("|", "\\|").replace("\n", " ").replace("\r", " ");
+    }
+
+    private String buildTextTable(List<String> headers, List<Map<String, String>> rows) {
+        if (headers == null || headers.isEmpty()) return "内容\n";
+        List<Integer> widths = new ArrayList<>();
+        for (String h : headers) {
+            widths.add(Math.max(4, h == null ? 0 : h.length()));
+        }
+        for (Map<String, String> row : rows) {
+            for (int i = 0; i < headers.size(); i++) {
+                String val = row.getOrDefault(headers.get(i), "");
+                widths.set(i, Math.min(60, Math.max(widths.get(i), val == null ? 0 : val.length())));
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        appendTextTableRow(sb, headers, widths);
+        appendTextTableDivider(sb, widths);
+        for (Map<String, String> row : rows) {
+            List<String> cells = new ArrayList<>();
+            for (String h : headers) {
+                String v = row.getOrDefault(h, "");
+                if (v != null && v.length() > 60) v = v.substring(0, 57) + "...";
+                cells.add(v == null ? "" : v.replace("\n", " ").replace("\r", " "));
+            }
+            appendTextTableRow(sb, cells, widths);
+        }
+        return sb.toString();
+    }
+
+    private void appendTextTableRow(StringBuilder sb, List<String> cells, List<Integer> widths) {
+        sb.append("|");
+        for (int i = 0; i < widths.size(); i++) {
+            String raw = i < cells.size() && cells.get(i) != null ? cells.get(i) : "";
+            int width = widths.get(i);
+            String cell = raw.length() > width ? raw.substring(0, width) : raw;
+            sb.append(" ").append(String.format("%-" + width + "s", cell)).append(" |");
+        }
+        sb.append("\n");
+    }
+
+    private void appendTextTableDivider(StringBuilder sb, List<Integer> widths) {
+        sb.append("|");
+        for (Integer width : widths) {
+            sb.append("-").append("-".repeat(Math.max(2, width))).append("-|");
+        }
+        sb.append("\n");
+    }
+
     private String normalizeOutputType(String outputType, String fallbackExt) {
         String t = outputType == null ? "" : outputType.toLowerCase().trim();
         if ("auto".equals(t) || t.isBlank()) t = fallbackExt == null ? "" : fallbackExt.toLowerCase().trim();
@@ -401,18 +522,19 @@ public class TableFillService {
                                                       String requirementText,
                                                       String requirementAnalysis) throws Exception {
         List<Map<String, String>> allRows = new ArrayList<>();
-        List<String> chunks = splitIntoChunks(fullSourceText, CHUNK_SIZE);
+        List<String> chunks = splitIntoChunks(fullSourceText, EXTRACTION_CHUNK_SIZE);
         if (chunks.isEmpty()) {
             log.warn("No source text available for extraction");
             return allRows;
         }
+        String compactRequirementText = clampText(requirementText, 1200, "抽取用用户要求");
 
         String headersJson = objectMapper.writeValueAsString(tmpl.headers);
         Set<String> seen = new LinkedHashSet<>();
 
         for (int ci = 0; ci < chunks.size(); ci++) {
             String chunk = chunks.get(ci);
-            String prompt = buildExtractionPrompt(tmpl.headers, headersJson, chunk, ci, chunks.size(), requirementText, requirementAnalysis);
+            String prompt = buildExtractionPrompt(tmpl.headers, headersJson, chunk, ci, chunks.size(), compactRequirementText, requirementAnalysis);
 
             LlmConfig extractConfig = cloneConfigWithHigherTokens(config, EXTRACTION_MAX_TOKENS);
             List<Map<String, String>> messages = List.of(
@@ -426,7 +548,7 @@ public class TableFillService {
                 String response = llmService.chatLong(extractConfig, messages);
                 List<Map<String, String>> rows = parseRowsFromResponse(response, tmpl.headers);
                 if (rows.isEmpty()) {
-                    String retryPrompt = buildRetryExtractionPrompt(tmpl.headers, headersJson, chunk, requirementText, requirementAnalysis);
+                    String retryPrompt = buildRetryExtractionPrompt(tmpl.headers, headersJson, chunk, compactRequirementText, requirementAnalysis);
                     String retryResp = llmService.chatLong(cloneConfigWithFixedTokens(config, RETRY_EXTRACTION_MAX_TOKENS), List.of(
                             Map.of("role", "system", "content", "你是JSON抽取修复助手，只能输出JSON数组。"),
                             Map.of("role", "user", "content", retryPrompt)
