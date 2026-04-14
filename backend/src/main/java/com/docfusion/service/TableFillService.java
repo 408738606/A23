@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xwpf.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +18,7 @@ import java.text.Normalizer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 @Service
 public class TableFillService {
@@ -30,6 +32,7 @@ public class TableFillService {
     private static final int MAX_SUMMARY_CHARS = 2200;
     private static final int MAX_FACTS_CHARS = 18000;
     private static final int EXTRACTION_CHUNK_SIZE = 3600;
+    private static final int EXTRACTION_PARALLELISM = 2;
     private static final int REQUIREMENT_ANALYSIS_MAX_TOKENS = 1536;
     private static final int SUMMARY_MAX_TOKENS = 2048;
     private static final int FINAL_GENERATION_MAX_TOKENS = 6144;
@@ -91,9 +94,21 @@ public class TableFillService {
             }
         } else {
             String templateText = readTemplateAsText(template.path, templateExt);
-            String generated = generateNonExcelOutput(config, templateText, sourceText, requirementText, targetExt);
-            outputPath = writeGeneratedOutput(targetExt, generated, template.originalName);
-            description = "AI自动填写完成，已生成内容文档";
+            if ("xlsx".equals(targetExt) || "xls".equals(targetExt)) {
+                TemplateInfo tmpl = buildTemplateInfoFromTextTemplate(templateText);
+                String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, String.join(" | ", tmpl.headers), targetExt);
+                String fullSourceText = sourceText;
+                if (requirementText != null && !requirementText.isBlank()) {
+                    fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
+                }
+                List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
+                outputPath = writeRowsToNewExcel(tmpl.headers, allRows, template.originalName);
+                description = String.format("AI自动填写完成（非Excel模板->Excel，分批抽取），共提取 %d 行数据", allRows.size());
+            } else {
+                String generated = generateNonExcelOutput(config, templateText, sourceText, requirementText, targetExt);
+                outputPath = writeGeneratedOutput(targetExt, generated, template.originalName);
+                description = "AI自动填写完成，已生成内容文档";
+            }
         }
 
         File outFile = new File(outputPath);
@@ -519,6 +534,55 @@ public class TableFillService {
         return info;
     }
 
+    private TemplateInfo buildTemplateInfoFromTextTemplate(String templateText) {
+        TemplateInfo info = new TemplateInfo();
+        List<String> headers = extractHeadersFromTextTemplate(templateText);
+        if (headers.isEmpty()) headers = Collections.singletonList("内容");
+        info.headers = headers;
+        info.headerRowIndex = 0;
+        info.dataStartRow = 1;
+        return info;
+    }
+
+    private List<String> extractHeadersFromTextTemplate(String templateText) {
+        if (templateText == null || templateText.isBlank()) return Collections.singletonList("内容");
+        String snippet = clampText(templateText, MAX_TEMPLATE_CHARS, "文本模板解析");
+        String[] lines = snippet.split("\\r?\\n");
+
+        for (int i = 0; i < lines.length - 1; i++) {
+            String line = lines[i].trim();
+            String next = lines[i + 1].trim();
+            if (line.contains("|") && next.matches("^\\|?\\s*:?[-]{3,}.*")) {
+                List<String> headers = parseHeaderLine(line, "\\|");
+                if (headers.size() >= 2) return headers;
+            }
+        }
+
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (line.isBlank()) continue;
+            if (line.startsWith("#") || line.startsWith("##") || line.startsWith("-") || line.startsWith("*")) continue;
+            List<String> tabHeaders = parseHeaderLine(line, "\\t");
+            if (tabHeaders.size() >= 2) return tabHeaders;
+            List<String> csvHeaders = parseHeaderLine(line, "[,，;；、|]");
+            if (csvHeaders.size() >= 2) return csvHeaders;
+        }
+        return Collections.singletonList("内容");
+    }
+
+    private List<String> parseHeaderLine(String line, String splitRegex) {
+        String[] parts = line.split(splitRegex);
+        List<String> headers = new ArrayList<>();
+        for (String p : parts) {
+            String h = p == null ? "" : p.trim();
+            if (h.isEmpty()) continue;
+            if ("---".equals(h) || ":---".equals(h) || "---:".equals(h) || ":---:".equals(h)) continue;
+            headers.add(h);
+        }
+        if (headers.size() < 2) return Collections.emptyList();
+        return headers;
+    }
+
     private List<Map<String, String>> extractAllRows(LlmConfig config,
                                                       TemplateInfo tmpl,
                                                       String fullSourceText,
@@ -535,35 +599,36 @@ public class TableFillService {
         String headersJson = objectMapper.writeValueAsString(tmpl.headers);
         Set<String> seen = new LinkedHashSet<>();
 
+        int workers = Math.max(1, Math.min(EXTRACTION_PARALLELISM, chunks.size()));
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        Map<Integer, List<Map<String, String>>> rowsByChunk = new HashMap<>();
+        try {
+            List<Future<ChunkExtractionResult>> futures = new ArrayList<>();
+            for (int ci = 0; ci < chunks.size(); ci++) {
+                final int chunkIndex = ci;
+                final String chunk = chunks.get(ci);
+                futures.add(executor.submit(() -> new ChunkExtractionResult(
+                        chunkIndex,
+                        extractRowsFromChunk(config, tmpl, headersJson, chunk, chunkIndex, chunks.size(), compactRequirementText, requirementAnalysis)
+                )));
+            }
+            for (Future<ChunkExtractionResult> future : futures) {
+                try {
+                    ChunkExtractionResult result = future.get();
+                    rowsByChunk.put(result.chunkIndex(), result.rows());
+                } catch (Exception e) {
+                    log.error("Parallel extraction task failed: {}", e.getMessage());
+                }
+            }
+        } finally {
+            executor.shutdown();
+        }
+
         for (int ci = 0; ci < chunks.size(); ci++) {
-            String chunk = chunks.get(ci);
-            String prompt = buildExtractionPrompt(tmpl.headers, headersJson, chunk, ci, chunks.size(), compactRequirementText, requirementAnalysis);
-
-            LlmConfig extractConfig = cloneConfigWithHigherTokens(config, EXTRACTION_MAX_TOKENS);
-            List<Map<String, String>> messages = List.of(
-                    Map.of("role", "system", "content",
-                            "你是专业的数据提取助手。严格按照要求的JSON格式输出，不添加任何额外说明文字。"
-                                    + "输出必须是合法的JSON数组，每个元素是一个对象，键为列头名称，值为对应数据。"),
-                    Map.of("role", "user", "content", prompt)
-            );
-
-            try {
-                String response = llmService.chatLong(extractConfig, messages);
-                List<Map<String, String>> rows = parseRowsFromResponse(response, tmpl.headers);
-                if (rows.isEmpty()) {
-                    String retryPrompt = buildRetryExtractionPrompt(tmpl.headers, headersJson, chunk, compactRequirementText, requirementAnalysis);
-                    String retryResp = llmService.chatLong(cloneConfigWithFixedTokens(config, RETRY_EXTRACTION_MAX_TOKENS), List.of(
-                            Map.of("role", "system", "content", "你是JSON抽取修复助手，只能输出JSON数组。"),
-                            Map.of("role", "user", "content", retryPrompt)
-                    ));
-                    rows = parseRowsFromResponse(retryResp, tmpl.headers);
-                }
-                for (Map<String, String> row : rows) {
-                    String key = buildRowKey(row, tmpl.headers);
-                    if (!key.isBlank() && seen.add(key)) allRows.add(row);
-                }
-            } catch (Exception e) {
-                log.error("Chunk {} extraction failed: {}", ci + 1, e.getMessage());
+            List<Map<String, String>> rows = rowsByChunk.getOrDefault(ci, Collections.emptyList());
+            for (Map<String, String> row : rows) {
+                String key = buildRowKey(row, tmpl.headers);
+                if (!key.isBlank() && seen.add(key)) allRows.add(row);
             }
         }
 
@@ -587,6 +652,38 @@ public class TableFillService {
         }
 
         return allRows;
+    }
+
+    private List<Map<String, String>> extractRowsFromChunk(LlmConfig config,
+                                                            TemplateInfo tmpl,
+                                                            String headersJson,
+                                                            String chunk,
+                                                            int chunkIndex,
+                                                            int totalChunks,
+                                                            String compactRequirementText,
+                                                            String requirementAnalysis) {
+        String prompt = buildExtractionPrompt(tmpl.headers, headersJson, chunk, chunkIndex, totalChunks, compactRequirementText, requirementAnalysis);
+        LlmConfig extractConfig = cloneConfigWithHigherTokens(config, EXTRACTION_MAX_TOKENS);
+        List<Map<String, String>> messages = List.of(
+                Map.of("role", "system", "content",
+                        "你是专业的数据提取助手。严格按照要求的JSON格式输出，不添加任何额外说明文字。"
+                                + "输出必须是合法的JSON数组，每个元素是一个对象，键为列头名称，值为对应数据。"),
+                Map.of("role", "user", "content", prompt)
+        );
+        try {
+            String response = llmService.chatLong(extractConfig, messages);
+            List<Map<String, String>> rows = parseRowsFromResponse(response, tmpl.headers);
+            if (!rows.isEmpty()) return rows;
+            String retryPrompt = buildRetryExtractionPrompt(tmpl.headers, headersJson, chunk, compactRequirementText, requirementAnalysis);
+            String retryResp = llmService.chatLong(cloneConfigWithFixedTokens(config, RETRY_EXTRACTION_MAX_TOKENS), List.of(
+                    Map.of("role", "system", "content", "你是JSON抽取修复助手，只能输出JSON数组。"),
+                    Map.of("role", "user", "content", retryPrompt)
+            ));
+            return parseRowsFromResponse(retryResp, tmpl.headers);
+        } catch (Exception e) {
+            log.error("Chunk {} extraction failed: {}", chunkIndex + 1, e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     private String buildExtractionPrompt(List<String> headers, String headersJson,
@@ -703,6 +800,36 @@ public class TableFillService {
         else if ("docx".equals(ext)) writeDocx(templatePath, outputPath, tmpl, rows);
         else writePlainText(outputPath, tmpl, rows);
         return outputPath;
+    }
+
+    private String writeRowsToNewExcel(List<String> headers,
+                                       List<Map<String, String>> rows,
+                                       String originalName) throws IOException {
+        String outputFileName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + baseName(originalName) + ".xlsx");
+        Path outFile = resolveOutputPath(outputFileName);
+        try (Workbook wb = new XSSFWorkbook()) {
+            Sheet sheet = wb.createSheet("填写结果");
+            Row headerRow = sheet.createRow(0);
+            for (int i = 0; i < headers.size(); i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers.get(i));
+            }
+            for (int ri = 0; ri < rows.size(); ri++) {
+                Row row = sheet.createRow(ri + 1);
+                Map<String, String> data = rows.get(ri);
+                for (int ci = 0; ci < headers.size(); ci++) {
+                    String val = data.getOrDefault(headers.get(ci), "");
+                    row.createCell(ci).setCellValue(val == null ? "" : val);
+                }
+            }
+            for (int ci = 0; ci < headers.size(); ci++) {
+                try { sheet.autoSizeColumn(ci); } catch (Exception ignored) {}
+            }
+            try (FileOutputStream fos = new FileOutputStream(outFile.toFile())) {
+                wb.write(fos);
+            }
+        }
+        return outFile.toString();
     }
 
     private void writeExcel(String templatePath, String outputPath,
@@ -906,6 +1033,8 @@ public class TableFillService {
         if (normalized.startsWith(kb) || normalized.startsWith(temp)) return normalized.toString();
         throw new RuntimeException("模板路径不安全，拒绝访问");
     }
+
+    private record ChunkExtractionResult(int chunkIndex, List<Map<String, String>> rows) {}
 
     private record ResolvedFile(String path, String originalName, String ext, boolean cleanup) {}
 

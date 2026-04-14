@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
-const api = axios.create({ baseURL: '/api', timeout: 600000 })
+const api = axios.create({ baseURL: '/api' })
 
 api.interceptors.response.use(
   res => res.data,
@@ -71,7 +71,7 @@ export const tableFillApi = {
     if (outputType) fd.append('outputType', outputType)
     if (llmConfigId) fd.append('llmConfigId', llmConfigId)
     if (sessionId) fd.append('sessionId', sessionId)
-    return api.post('/table-fill/fill', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 })
+    return api.post('/table-fill/fill', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
   getOutputs: (sessionId) => api.get('/table-fill/outputs', { params: { sessionId } }),
   saveToKb: (id, params = {}) => api.post(`/table-fill/outputs/${id}/save-to-kb`, null, { params }),
@@ -99,6 +99,6 @@ export const docFormatApi = {
     if (outputType) fd.append('outputType', outputType)
     if (llmConfigId) fd.append('llmConfigId', llmConfigId)
     if (sessionId) fd.append('sessionId', sessionId)
-    return api.post('/doc-format/process', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 })
+    return api.post('/doc-format/process', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
   }
 }

@@ -36,7 +36,7 @@ public class LlmService {
     // Long-timeout client for table fill (multi-batch, may take minutes)
     private final OkHttpClient longClient = new OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(600, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .build();
 
