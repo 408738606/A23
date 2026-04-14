@@ -993,7 +993,7 @@ public class TableFillService {
 
     private String saveTempFile(MultipartFile file) throws IOException {
         String filename = System.currentTimeMillis() + "_temp_" + sanitizeFilename(file.getOriginalFilename());
-        Path dest = Paths.get(appConfig.getUploadTempPath(), filename);
+        Path dest = resolveUploadTempPath(filename);
         Files.copy(file.getInputStream(), dest, StandardCopyOption.REPLACE_EXISTING);
         return dest.toString();
     }
@@ -1016,6 +1016,16 @@ public class TableFillService {
         Path resolved = outputDir.resolve(fileName).normalize().toAbsolutePath();
         if (!resolved.startsWith(outputDir)) {
             throw new IOException("输出路径不安全，拒绝写入");
+        }
+        return resolved;
+    }
+
+    private Path resolveUploadTempPath(String fileName) throws IOException {
+        Path tempDir = Paths.get(appConfig.getUploadTempPath()).normalize().toAbsolutePath();
+        Files.createDirectories(tempDir);
+        Path resolved = tempDir.resolve(fileName).normalize().toAbsolutePath();
+        if (!resolved.startsWith(tempDir)) {
+            throw new IOException("临时文件路径不安全，拒绝写入");
         }
         return resolved;
     }
