@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.*;
+import java.text.Normalizer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -302,7 +303,8 @@ public class TableFillService {
 
     private String writeGeneratedOutput(String ext, String content, String originalName) throws IOException {
         String outName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + baseName(originalName) + "." + ext);
-        String outPath = appConfig.getOutputPath() + File.separator + outName;
+        Path outFile = resolveOutputPath(outName);
+        String outPath = outFile.toString();
 
         if ("docx".equals(ext)) {
             try (XWPFDocument doc = new XWPFDocument()) {
@@ -324,7 +326,8 @@ public class TableFillService {
                                               List<Map<String, String>> rows,
                                               String originalName) throws IOException {
         String outName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + baseName(originalName) + "." + ext);
-        String outPath = appConfig.getOutputPath() + File.separator + outName;
+        Path outFile = resolveOutputPath(outName);
+        String outPath = outFile.toString();
         if ("docx".equals(ext)) {
             writeDocxTableOutput(outPath, tmpl.headers, rows);
         } else if ("md".equals(ext)) {
@@ -693,7 +696,8 @@ public class TableFillService {
                                        TemplateInfo tmpl, List<Map<String, String>> rows,
                                        String originalName) throws IOException {
         String outputFileName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + originalName);
-        String outputPath = appConfig.getOutputPath() + File.separator + outputFileName;
+        Path outFile = resolveOutputPath(outputFileName);
+        String outputPath = outFile.toString();
 
         if ("xlsx".equals(ext) || "xls".equals(ext)) writeExcel(templatePath, outputPath, tmpl, rows);
         else if ("docx".equals(ext)) writeDocx(templatePath, outputPath, tmpl, rows);
@@ -871,11 +875,24 @@ public class TableFillService {
 
     private String sanitizeFilename(String name) {
         String raw = (name == null || name.isBlank()) ? "file.txt" : name;
-        String sanitized = raw
-                .replaceAll("[\\p{Cntrl}]+", "_")
+        String normalized = Normalizer.normalize(raw, Normalizer.Form.NFKC);
+        String sanitized = normalized
+                .replaceAll("[\\p{Cntrl}\\u200B-\\u200F\\u202A-\\u202E\\u2060\\uFEFF]+", "_")
                 .replaceAll("[\\\\/:*?\"<>|]+", "_")
-                .replace("..", "_");
+                .replaceAll("[^\\p{L}\\p{N}._-]+", "_");
+        while (sanitized.contains("..")) sanitized = sanitized.replace("..", "_");
+        sanitized = sanitized.replaceAll("^\\.+", "");
         return sanitized.isBlank() ? "file.txt" : sanitized;
+    }
+
+    private Path resolveOutputPath(String fileName) throws IOException {
+        Path outputDir = Paths.get(appConfig.getOutputPath()).normalize().toAbsolutePath();
+        Files.createDirectories(outputDir);
+        Path resolved = outputDir.resolve(fileName).normalize().toAbsolutePath();
+        if (!resolved.startsWith(outputDir)) {
+            throw new IOException("输出路径不安全，拒绝写入");
+        }
+        return resolved;
     }
 
     private String baseName(String name) {
