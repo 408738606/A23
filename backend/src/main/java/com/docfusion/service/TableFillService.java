@@ -98,14 +98,20 @@ public class TableFillService {
 
             if ("docx".equals(templateExt) && "docx".equals(targetExt) && docxTableTemplates.size() > 1) {
                 Map<Integer, List<Map<String, String>>> rowsByTable = new LinkedHashMap<>();
-                int totalRows = 0;
                 for (TemplateInfo tableTmpl : docxTableTemplates) {
+                    String scopedRequirement = buildScopedRequirement(requirementText, tableTmpl);
                     String tableHeaders = String.join(" | ", tableTmpl.headers);
-                    String tableRequirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, tableHeaders, targetExt);
-                    List<Map<String, String>> tableRows = extractAllRows(config, tableTmpl, fullSourceText, requirementText, tableRequirementAnalysis);
+                    String tableRequirementAnalysis = analyzeRequirementDocumentSafe(
+                            config,
+                            scopedRequirement,
+                            tableHeaders + ((tableTmpl.tablePrompt == null || tableTmpl.tablePrompt.isBlank()) ? "" : "\n表格用途提示：" + tableTmpl.tablePrompt),
+                            targetExt
+                    );
+                    List<Map<String, String>> tableRows = extractAllRows(config, tableTmpl, fullSourceText, scopedRequirement, tableRequirementAnalysis);
                     rowsByTable.put(tableTmpl.tableIndex, tableRows);
-                    totalRows += tableRows.size();
                 }
+                rowsByTable = enforceTableIntentAssignment(docxTableTemplates, rowsByTable);
+                int totalRows = rowsByTable.values().stream().mapToInt(List::size).sum();
                 outputPath = writeRowsToDocxTables(template.path, docxTableTemplates, rowsByTable, template.originalName);
                 description = String.format("AI自动填写完成（按模板多表分类填充），共提取 %d 行数据，填充 %d 个表格", totalRows, docxTableTemplates.size());
             } else {
@@ -582,9 +588,22 @@ public class TableFillService {
     private List<TemplateInfo> parseDocxTemplateInfos(String filePath) throws IOException {
         List<TemplateInfo> infos = new ArrayList<>();
         try (XWPFDocument doc = new XWPFDocument(new FileInputStream(filePath))) {
-            List<XWPFTable> tables = doc.getTables();
-            for (int tableIndex = 0; tableIndex < tables.size(); tableIndex++) {
-                XWPFTable table = tables.get(tableIndex);
+            List<IBodyElement> bodyElements = doc.getBodyElements();
+            Deque<String> recentParagraphs = new ArrayDeque<>();
+            int tableIndex = 0;
+            for (IBodyElement element : bodyElements) {
+                if (element.getElementType() == BodyElementType.PARAGRAPH) {
+                    XWPFParagraph paragraph = (XWPFParagraph) element;
+                    String text = paragraph == null ? "" : Optional.ofNullable(paragraph.getText()).orElse("").trim();
+                    if (!text.isBlank()) {
+                        recentParagraphs.addLast(text);
+                        while (recentParagraphs.size() > 3) recentParagraphs.removeFirst();
+                    }
+                    continue;
+                }
+                if (element.getElementType() != BodyElementType.TABLE) continue;
+                XWPFTable table = (XWPFTable) element;
+                int currentTableIndex = tableIndex++;
                 if (table == null || table.getRows() == null || table.getRows().isEmpty()) continue;
                 XWPFTableRow header = table.getRow(0);
                 if (header == null) continue;
@@ -601,12 +620,29 @@ public class TableFillService {
                     info.dataStartRow = 1;
                     info.templateDataRows = Math.max(0, table.getNumberOfRows() - 1);
                     info.structuredTableTemplate = true;
-                    info.tableIndex = tableIndex;
+                    info.tableIndex = currentTableIndex;
+                    info.tablePrompt = buildDocxTablePrompt(recentParagraphs);
                     infos.add(info);
                 }
+                recentParagraphs.clear();
             }
         }
         return infos;
+    }
+
+    private String buildDocxTablePrompt(Deque<String> recentParagraphs) {
+        if (recentParagraphs == null || recentParagraphs.isEmpty()) return "";
+        List<String> lines = new ArrayList<>();
+        Iterator<String> it = recentParagraphs.descendingIterator();
+        while (it.hasNext() && lines.size() < 2) {
+            String line = it.next();
+            if (line == null) continue;
+            String clean = line.replaceAll("\\s+", " ").trim();
+            if (clean.isBlank()) continue;
+            lines.add(0, clean);
+        }
+        if (lines.isEmpty()) return "";
+        return clampText(String.join("；", lines), 160, "表格提示");
     }
 
     private TemplateInfo buildTemplateInfoFromTextTemplate(String templateText) {
@@ -1139,6 +1175,97 @@ public class TableFillService {
         return new ArrayList<>(terms);
     }
 
+    private String buildScopedRequirement(String requirementText, TemplateInfo tmpl) {
+        String prompt = tmpl == null ? "" : Optional.ofNullable(tmpl.tablePrompt).orElse("").trim();
+        if (prompt.isBlank()) return requirementText;
+        String hint = "【模板表格分类提示】\n" + prompt + "\n请仅提取符合该表格提示的数据。";
+        if (requirementText == null || requirementText.isBlank()) return hint;
+        return requirementText + "\n\n" + hint;
+    }
+
+    private Map<Integer, List<Map<String, String>>> enforceTableIntentAssignment(List<TemplateInfo> tableTemplates,
+                                                                                  Map<Integer, List<Map<String, String>>> rowsByTable) {
+        if (tableTemplates == null || tableTemplates.isEmpty() || rowsByTable == null || rowsByTable.isEmpty()) return rowsByTable;
+        Map<String, List<RowHolder>> byFingerprint = new LinkedHashMap<>();
+        for (TemplateInfo tmpl : tableTemplates) {
+            List<Map<String, String>> rows = rowsByTable.getOrDefault(tmpl.tableIndex, Collections.emptyList());
+            for (Map<String, String> row : rows) {
+                String fp = buildRowFingerprint(row);
+                if (fp.isBlank()) continue;
+                byFingerprint.computeIfAbsent(fp, k -> new ArrayList<>()).add(new RowHolder(tmpl, row));
+            }
+        }
+
+        Map<Integer, List<Map<String, String>>> assigned = new LinkedHashMap<>();
+        for (TemplateInfo tmpl : tableTemplates) assigned.put(tmpl.tableIndex, new ArrayList<>());
+        for (List<RowHolder> candidates : byFingerprint.values()) {
+            if (candidates.isEmpty()) continue;
+            RowHolder best = candidates.get(0);
+            int bestScore = scoreRowAgainstTemplate(best.row(), best.template());
+            for (int i = 1; i < candidates.size(); i++) {
+                RowHolder current = candidates.get(i);
+                int score = scoreRowAgainstTemplate(current.row(), current.template());
+                if (score > bestScore || (score == bestScore && current.template().tableIndex < best.template().tableIndex)) {
+                    best = current;
+                    bestScore = score;
+                }
+            }
+            assigned.computeIfAbsent(best.template().tableIndex, k -> new ArrayList<>()).add(best.row());
+        }
+
+        for (TemplateInfo tmpl : tableTemplates) {
+            List<Map<String, String>> rows = assigned.getOrDefault(tmpl.tableIndex, Collections.emptyList());
+            LinkedHashMap<String, Map<String, String>> unique = new LinkedHashMap<>();
+            for (Map<String, String> row : rows) {
+                String key = buildRowKey(row, tmpl.headers);
+                if (!key.isBlank()) unique.putIfAbsent(key, row);
+            }
+            assigned.put(tmpl.tableIndex, new ArrayList<>(unique.values()));
+        }
+        return assigned;
+    }
+
+    private String buildRowFingerprint(Map<String, String> row) {
+        if (row == null || row.isEmpty()) return "";
+        List<String> values = new ArrayList<>();
+        for (String v : row.values()) {
+            String cleaned = normalizeValue(v);
+            if (!cleaned.isBlank()) values.add(cleaned);
+        }
+        if (values.isEmpty()) return "";
+        Collections.sort(values);
+        return String.join("|", values);
+    }
+
+    private int scoreRowAgainstTemplate(Map<String, String> row, TemplateInfo tmpl) {
+        if (row == null || row.isEmpty() || tmpl == null) return 0;
+        String rowText = row.values().stream()
+                .filter(Objects::nonNull)
+                .map(this::normalizeValue)
+                .filter(s -> !s.isBlank())
+                .reduce("", (a, b) -> a + " " + b).trim();
+        if (rowText.isBlank()) return 0;
+        List<String> terms = buildFocusTerms(
+                tmpl.tablePrompt,
+                null,
+                String.join(" ", tmpl.headers),
+                tmpl.headers
+        );
+        int score = 0;
+        for (String term : terms) {
+            String t = normalizeValue(term);
+            if (!t.isBlank() && rowText.contains(t)) score++;
+        }
+        return score;
+    }
+
+    private String normalizeValue(String text) {
+        if (text == null) return "";
+        return text.toLowerCase()
+                .replaceAll("[\\s\\p{Punct}，。；：、“”‘’（）()【】\\[\\]{}]+", "")
+                .trim();
+    }
+
     private void addTermTokens(Set<String> terms, String text) {
         if (text == null || text.isBlank()) return;
         String cleaned = text.toLowerCase()
@@ -1308,6 +1435,7 @@ public class TableFillService {
 
     private record ChunkExtractionResult(int chunkIndex, List<Map<String, String>> rows) {}
     private record ScoredChunk(int index, int score) {}
+    private record RowHolder(TemplateInfo template, Map<String, String> row) {}
 
     private record ResolvedFile(String path, String originalName, String ext, boolean cleanup) {}
 
@@ -1319,5 +1447,6 @@ public class TableFillService {
         int templateDataRows = 0;
         boolean structuredTableTemplate = false;
         int tableIndex = 0;
+        String tablePrompt = "";
     }
 }
