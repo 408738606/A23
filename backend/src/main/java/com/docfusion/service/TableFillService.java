@@ -33,6 +33,9 @@ public class TableFillService {
     private static final int MAX_FACTS_CHARS = 18000;
     private static final int EXTRACTION_CHUNK_SIZE = 3600;
     private static final int EXTRACTION_PARALLELISM = 2;
+    private static final int MIN_RELEVANT_CHUNKS = 3;
+    private static final int MAX_RELEVANT_CHUNKS = 12;
+    private static final int FOCUS_KEYWORD_LIMIT = 36;
     private static final int REQUIREMENT_ANALYSIS_MAX_TOKENS = 1536;
     private static final int SUMMARY_MAX_TOKENS = 2048;
     private static final int FINAL_GENERATION_MAX_TOKENS = 6144;
@@ -200,14 +203,20 @@ public class TableFillService {
         String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, templateSnippet, ext);
         List<String> sourceChunks = splitIntoChunks(sourceText, CHUNK_SIZE);
         if (sourceChunks.isEmpty()) sourceChunks = List.of("");
+        List<String> focusTerms = buildFocusTerms(requirementText, requirementAnalysis, templateSnippet, List.of());
+        List<String> selectedChunks = selectRelevantChunks(sourceChunks, focusTerms, MIN_RELEVANT_CHUNKS, MAX_RELEVANT_CHUNKS);
+        if (selectedChunks.isEmpty()) selectedChunks = sourceChunks;
+        if (selectedChunks.size() < sourceChunks.size()) {
+            log.info("非Excel生成启用需求/模板优先筛选：{} -> {} 段", sourceChunks.size(), selectedChunks.size());
+        }
 
         StringBuilder condensedFacts = new StringBuilder();
-        for (int i = 0; i < sourceChunks.size(); i++) {
-            String chunk = sourceChunks.get(i);
+        for (int i = 0; i < selectedChunks.size(); i++) {
+            String chunk = selectedChunks.get(i);
             String summarizePrompt = "你是结构化信息抽取助手。请提炼可直接用于填写目标文档的事实数据。\n\n"
                     + ((requirementAnalysis != null && !requirementAnalysis.isBlank()) ? "# 任务要求解析\n" + requirementAnalysis + "\n\n" : "")
                     + "# 模板内容（摘要）\n" + templateSnippet + "\n\n"
-                    + "# 数据源片段（第 " + (i + 1) + "/" + sourceChunks.size() + " 段）\n" + chunk + "\n\n"
+                    + "# 数据源片段（第 " + (i + 1) + "/" + selectedChunks.size() + " 段）\n" + chunk + "\n\n"
                     + "输出要求：\n"
                     + "1) 只保留“事实数据”，禁止生成推测内容\n"
                     + "2) 如果内容来自表格（xlsx/xls提取文本），尽量还原为“字段: 值”形式\n"
@@ -237,9 +246,10 @@ public class TableFillService {
             }
         }
 
+        String focusedSourceText = String.join("\n\n", selectedChunks);
         String sourceFacts = condensedFacts.length() > 0
                 ? clampText(condensedFacts.toString(), MAX_FACTS_CHARS, "提炼事实")
-                : clampText(sourceText, CHUNK_SIZE, "数据源");
+                : clampText(focusedSourceText, CHUNK_SIZE, "数据源");
 
         String prompt = "你是文档填写助手。请根据模板结构与用户要求生成最终文档内容。\n\n"
                 + ((requirementAnalysis != null && !requirementAnalysis.isBlank()) ? "# 用户要求解析\n" + requirementAnalysis + "\n\n" : "")
@@ -595,6 +605,12 @@ public class TableFillService {
             return allRows;
         }
         String compactRequirementText = clampText(requirementText, 1200, "抽取用用户要求");
+        List<String> focusTerms = buildFocusTerms(compactRequirementText, requirementAnalysis, String.join(" | ", tmpl.headers), tmpl.headers);
+        List<String> selectedChunks = selectRelevantChunks(chunks, focusTerms, MIN_RELEVANT_CHUNKS, MAX_RELEVANT_CHUNKS);
+        if (!selectedChunks.isEmpty() && selectedChunks.size() < chunks.size()) {
+            log.info("表格抽取启用需求/模板优先筛选：{} -> {} 段", chunks.size(), selectedChunks.size());
+            chunks = selectedChunks;
+        }
 
         String headersJson = objectMapper.writeValueAsString(tmpl.headers);
         Set<String> seen = new LinkedHashSet<>();
@@ -950,6 +966,96 @@ public class TableFillService {
         return chunks;
     }
 
+    private List<String> buildFocusTerms(String requirementText,
+                                         String requirementAnalysis,
+                                         String templateSnippet,
+                                         List<String> headers) {
+        LinkedHashSet<String> terms = new LinkedHashSet<>();
+        if (headers != null) {
+            for (String h : headers) addTermTokens(terms, h);
+        }
+        addTermTokens(terms, requirementText);
+        addTermTokens(terms, requirementAnalysis);
+        addTermTokens(terms, templateSnippet);
+        if (terms.size() > FOCUS_KEYWORD_LIMIT) {
+            return new ArrayList<>(terms).subList(0, FOCUS_KEYWORD_LIMIT);
+        }
+        return new ArrayList<>(terms);
+    }
+
+    private void addTermTokens(Set<String> terms, String text) {
+        if (text == null || text.isBlank()) return;
+        String cleaned = text.toLowerCase()
+                .replaceAll("[`~!@#$%^&*+=<>?/\\\\\"'\\[\\]{}()（）|]", " ")
+                .replaceAll("\\s+", " ");
+        String[] raw = cleaned.split("[\\s,，;；:：、。\\n\\r\\t]+");
+        for (String token : raw) {
+            String t = token == null ? "" : token.trim();
+            if (t.length() < 2 || t.length() > 24) continue;
+            if (isStopTerm(t)) continue;
+            terms.add(t);
+            if (terms.size() >= FOCUS_KEYWORD_LIMIT) return;
+        }
+    }
+
+    private boolean isStopTerm(String term) {
+        return Set.of(
+                "用户要求", "模板", "数据源", "文档", "内容", "输出", "要求", "字段", "格式", "信息",
+                "以及", "或者", "其中", "根据", "需要", "请", "进行", "相关", "通过", "如果",
+                "the", "and", "for", "with", "from", "that", "this", "are", "was", "were"
+        ).contains(term);
+    }
+
+    private List<String> selectRelevantChunks(List<String> chunks,
+                                              List<String> focusTerms,
+                                              int minKeep,
+                                              int maxKeep) {
+        if (chunks == null || chunks.isEmpty()) return Collections.emptyList();
+        if (chunks.size() <= Math.max(1, minKeep)) return chunks;
+        if (focusTerms == null || focusTerms.isEmpty()) return chunks;
+
+        List<ScoredChunk> scored = new ArrayList<>();
+        for (int i = 0; i < chunks.size(); i++) {
+            String c = chunks.get(i);
+            String lower = c == null ? "" : c.toLowerCase();
+            int score = 0;
+            for (String term : focusTerms) {
+                if (lower.contains(term)) score++;
+            }
+            scored.add(new ScoredChunk(i, score));
+        }
+
+        int safeMaxKeep = Math.max(1, Math.min(maxKeep, chunks.size()));
+        int safeMinKeep = Math.max(1, Math.min(minKeep, safeMaxKeep));
+        List<ScoredChunk> matched = scored.stream().filter(s -> s.score > 0).toList();
+        if (matched.isEmpty()) return chunks;
+
+        int target = Math.min(safeMaxKeep, Math.max(safeMinKeep, matched.size()));
+        List<ScoredChunk> byScore = new ArrayList<>(scored);
+        byScore.sort((a, b) -> {
+            if (b.score != a.score) return Integer.compare(b.score, a.score);
+            return Integer.compare(a.index, b.index);
+        });
+
+        LinkedHashSet<Integer> picked = new LinkedHashSet<>();
+        for (ScoredChunk item : byScore) {
+            if (item.score <= 0) continue;
+            picked.add(item.index);
+            if (picked.size() >= target) break;
+        }
+        if (picked.size() < safeMinKeep) {
+            for (ScoredChunk item : byScore) {
+                picked.add(item.index);
+                if (picked.size() >= safeMinKeep) break;
+            }
+        }
+
+        List<Integer> ordered = picked.stream().sorted().toList();
+        List<String> selected = new ArrayList<>();
+        for (Integer idx : ordered) selected.add(chunks.get(idx));
+        return selected.isEmpty() ? chunks : selected;
+    }
+
     private LlmConfig cloneConfigWithHigherTokens(LlmConfig original, int tokens) {
         LlmConfig clone = new LlmConfig();
         clone.setId(original.getId());
@@ -1045,6 +1151,7 @@ public class TableFillService {
     }
 
     private record ChunkExtractionResult(int chunkIndex, List<Map<String, String>> rows) {}
+    private record ScoredChunk(int index, int score) {}
 
     private record ResolvedFile(String path, String originalName, String ext, boolean cleanup) {}
 
