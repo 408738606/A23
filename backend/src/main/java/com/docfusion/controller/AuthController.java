@@ -6,16 +6,22 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
-import java.util.HexFormat;
+import java.util.Base64;
 import java.util.Map;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
+    private static final int PBKDF2_ITERATIONS = 600000;
+    private static final int SALT_BYTES = 16;
+    private static final int HASH_BYTES = 32;
+    private static final int TOKEN_EXPIRE_DAYS = 7;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
     @Autowired
     private UserAccountRepo userAccountRepo;
 
@@ -39,11 +45,12 @@ public class AuthController {
             }
             UserAccount user = new UserAccount();
             user.setUsername(username);
-            user.setPasswordHash(sha256(password));
+            user.setPasswordHash(hashPassword(password));
             user.setDisplayName(displayName.isBlank() ? username : displayName);
             user.setAvatarUrl("");
             user.setBio("");
             user.setAuthToken(generateToken());
+            user.setTokenExpiresAt(LocalDateTime.now().plusDays(TOKEN_EXPIRE_DAYS));
             userAccountRepo.save(user);
             return ResponseEntity.ok(Map.of(
                     "success", true,
@@ -65,11 +72,11 @@ public class AuthController {
         }
         return userAccountRepo.findByUsername(username)
                 .map(user -> {
-                    if (!sha256(password).equals(user.getPasswordHash())) {
+                    if (!verifyPassword(password, user.getPasswordHash())) {
                         return ResponseEntity.badRequest().body(Map.of("success", false, "message", "用户名或密码错误"));
                     }
                     user.setAuthToken(generateToken());
-                    user.setUpdatedAt(LocalDateTime.now());
+                    user.setTokenExpiresAt(LocalDateTime.now().plusDays(TOKEN_EXPIRE_DAYS));
                     userAccountRepo.save(user);
                     return ResponseEntity.ok(Map.of(
                             "success", true,
@@ -86,6 +93,7 @@ public class AuthController {
         UserAccount user = resolveByAuthorization(authorization);
         if (user != null) {
             user.setAuthToken(null);
+            user.setTokenExpiresAt(null);
             userAccountRepo.save(user);
         }
         return ResponseEntity.ok(Map.of("success", true, "message", "已退出登录"));
@@ -133,7 +141,16 @@ public class AuthController {
         String prefix = "Bearer ";
         String token = authorization.startsWith(prefix) ? authorization.substring(prefix.length()).trim() : authorization.trim();
         if (token.isBlank()) return null;
-        return userAccountRepo.findByAuthToken(token).orElse(null);
+        UserAccount user = userAccountRepo.findByAuthToken(token).orElse(null);
+        if (user == null) return null;
+        LocalDateTime expiresAt = user.getTokenExpiresAt();
+        if (expiresAt == null || expiresAt.isBefore(LocalDateTime.now())) {
+            user.setAuthToken(null);
+            user.setTokenExpiresAt(null);
+            userAccountRepo.save(user);
+            return null;
+        }
+        return user;
     }
 
     private String normalize(String value) {
@@ -141,17 +158,42 @@ public class AuthController {
     }
 
     private String generateToken() {
-        return UUID.randomUUID() + "." + UUID.randomUUID();
+        byte[] bytes = new byte[32];
+        SECURE_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private String sha256(String input) {
+    private String hashPassword(String plainPassword) {
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
+            byte[] salt = new byte[SALT_BYTES];
+            SECURE_RANDOM.nextBytes(salt);
+            byte[] hash = pbkdf2(plainPassword.toCharArray(), salt);
+            return Base64.getEncoder().encodeToString(salt) + ":" + Base64.getEncoder().encodeToString(hash);
         } catch (Exception e) {
             throw new RuntimeException("密码处理失败");
         }
+    }
+
+    private boolean verifyPassword(String plainPassword, String stored) {
+        if (stored == null || !stored.contains(":")) return false;
+        try {
+            String[] parts = stored.split(":", 2);
+            byte[] salt = Base64.getDecoder().decode(parts[0]);
+            byte[] expected = Base64.getDecoder().decode(parts[1]);
+            byte[] actual = pbkdf2(plainPassword.toCharArray(), salt);
+            if (actual.length != expected.length) return false;
+            int diff = 0;
+            for (int i = 0; i < actual.length; i++) diff |= (actual[i] ^ expected[i]);
+            return diff == 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private byte[] pbkdf2(char[] password, byte[] salt) throws Exception {
+        PBEKeySpec spec = new PBEKeySpec(password, salt, PBKDF2_ITERATIONS, HASH_BYTES * 8);
+        SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        return skf.generateSecret(spec).getEncoded();
     }
 
     private Map<String, Object> sanitizeUser(UserAccount user) {

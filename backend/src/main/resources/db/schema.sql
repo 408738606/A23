@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS user_accounts (
   avatar_url VARCHAR(1024),
   bio VARCHAR(512),
   auth_token VARCHAR(128) UNIQUE,
+  token_expires_at DATETIME,
   created_at DATETIME,
   updated_at DATETIME
 );

@@ -22,14 +22,10 @@ const router = createRouter({
   routes
 })
 
-let restored = false
 router.beforeEach(async (to) => {
   const authStore = useAuthStore()
-  if (!restored && authStore.token) {
-    restored = true
+  if (authStore.token && !authStore.user) {
     await authStore.restore()
-  } else if (!restored) {
-    restored = true
   }
   const requiresAuth = to.meta.requiresAuth !== false
   if (requiresAuth && !authStore.isLoggedIn) {

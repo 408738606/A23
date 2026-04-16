@@ -28,6 +28,7 @@ public class UserAccount {
 
     @Column(unique = true, length = 128)
     private String authToken;
+    private LocalDateTime tokenExpiresAt;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -57,6 +58,8 @@ public class UserAccount {
     public void setBio(String bio) { this.bio = bio; }
     public String getAuthToken() { return authToken; }
     public void setAuthToken(String authToken) { this.authToken = authToken; }
+    public LocalDateTime getTokenExpiresAt() { return tokenExpiresAt; }
+    public void setTokenExpiresAt(LocalDateTime tokenExpiresAt) { this.tokenExpiresAt = tokenExpiresAt; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
