@@ -611,21 +611,22 @@ public class TableFillService {
             log.info("表格抽取启用需求/模板优先筛选：{} -> {} 段", chunks.size(), selectedChunks.size());
             chunks = selectedChunks;
         }
+        final List<String> chunksToProcess = chunks;
 
         String headersJson = objectMapper.writeValueAsString(tmpl.headers);
         Set<String> seen = new LinkedHashSet<>();
 
-        int workers = Math.max(1, Math.min(EXTRACTION_PARALLELISM, chunks.size()));
+        int workers = Math.max(1, Math.min(EXTRACTION_PARALLELISM, chunksToProcess.size()));
         ExecutorService executor = Executors.newFixedThreadPool(workers);
         Map<Integer, List<Map<String, String>>> rowsByChunk = new HashMap<>();
         try {
             List<Future<ChunkExtractionResult>> futures = new ArrayList<>();
-            for (int ci = 0; ci < chunks.size(); ci++) {
+            for (int ci = 0; ci < chunksToProcess.size(); ci++) {
                 final int chunkIndex = ci;
-                final String chunk = chunks.get(ci);
+                final String chunk = chunksToProcess.get(ci);
                 futures.add(executor.submit(() -> new ChunkExtractionResult(
                         chunkIndex,
-                        extractRowsFromChunk(config, tmpl, headersJson, chunk, chunkIndex, chunks.size(), compactRequirementText, requirementAnalysis)
+                        extractRowsFromChunk(config, tmpl, headersJson, chunk, chunkIndex, chunksToProcess.size(), compactRequirementText, requirementAnalysis)
                 )));
             }
             for (Future<ChunkExtractionResult> future : futures) {
@@ -640,7 +641,7 @@ public class TableFillService {
             executor.shutdown();
         }
 
-        for (int ci = 0; ci < chunks.size(); ci++) {
+        for (int ci = 0; ci < chunksToProcess.size(); ci++) {
             List<Map<String, String>> rows = rowsByChunk.getOrDefault(ci, Collections.emptyList());
             for (Map<String, String> row : rows) {
                 String key = buildRowKey(row, tmpl.headers);
