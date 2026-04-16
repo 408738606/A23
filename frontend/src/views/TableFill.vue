@@ -11,10 +11,10 @@
       <div class="config-panel">
         <div class="panel-section">
           <div class="section-title">① 选择模板</div>
-          <el-radio-group v-model="templateMode" size="small">
-            <el-radio-button label="local">本地上传</el-radio-button>
-            <el-radio-button label="knowledge">知识库选择</el-radio-button>
-          </el-radio-group>
+          <div class="mode-switch">
+            <button class="mode-btn left" :class="{ active: templateMode === 'knowledge' }" @click="templateMode = 'knowledge'">知识库文件</button>
+            <button class="mode-btn right" :class="{ active: templateMode === 'local' }" @click="templateMode = 'local'">本地上传</button>
+          </div>
 
           <el-upload
             v-if="templateMode === 'local'"
@@ -50,72 +50,74 @@
 
         <div class="panel-section">
           <div class="section-title">② 选择数据源文档</div>
-          <el-tabs v-model="sourceTab">
-            <el-tab-pane label="知识库" name="kb">
-              <el-select v-model="sourceSubDb" clearable placeholder="先选子数据库" style="width:100%;margin-bottom:8px">
-                <el-option label="全部" value="" />
-                <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
-              </el-select>
-              <div class="doc-list">
-                <el-checkbox-group v-model="selectedSourceIds">
-                  <div v-for="doc in sourceKbDocs" :key="doc.id" class="doc-item">
-                    <el-checkbox :label="doc.id">
-                      <span>{{ getFileIcon(doc.fileType) }} {{ doc.fileName }}</span>
-                    </el-checkbox>
-                  </div>
-                </el-checkbox-group>
-              </div>
-            </el-tab-pane>
-            <el-tab-pane label="本地上传" name="local">
-              <el-upload
-                drag
-                multiple
-                :auto-upload="false"
-                :file-list="sourceFileList"
-                :on-change="(_, list) => sourceFileList = list"
-                :on-remove="(_, list) => sourceFileList = list"
-                accept=".docx,.doc,.xlsx,.xls,.md,.txt"
-              >
-                <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
-                <div class="el-upload__text">拖拽或点击上传数据源文件</div>
-              </el-upload>
-            </el-tab-pane>
-          </el-tabs>
+          <div class="mode-switch">
+            <button class="mode-btn left" :class="{ active: sourceTab === 'kb' }" @click="sourceTab = 'kb'">知识库文件</button>
+            <button class="mode-btn right" :class="{ active: sourceTab === 'local' }" @click="sourceTab = 'local'">本地上传</button>
+          </div>
+          <div v-if="sourceTab === 'kb'">
+            <el-select v-model="sourceSubDb" clearable placeholder="先选子数据库" style="width:100%;margin-bottom:8px">
+              <el-option label="全部" value="" />
+              <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
+            </el-select>
+            <div class="doc-list">
+              <el-checkbox-group v-model="selectedSourceIds">
+                <div v-for="doc in sourceKbDocs" :key="doc.id" class="doc-item">
+                  <el-checkbox :label="doc.id">
+                    <span>{{ getFileIcon(doc.fileType) }} {{ doc.fileName }}</span>
+                  </el-checkbox>
+                </div>
+              </el-checkbox-group>
+            </div>
+          </div>
+          <el-upload
+            v-else
+            drag
+            multiple
+            :auto-upload="false"
+            :file-list="sourceFileList"
+            :on-change="(_, list) => sourceFileList = list"
+            :on-remove="(_, list) => sourceFileList = list"
+            accept=".docx,.doc,.xlsx,.xls,.md,.txt"
+          >
+            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+            <div class="el-upload__text">拖拽或点击上传数据源文件</div>
+          </el-upload>
         </div>
 
         <div class="panel-section">
           <div class="section-title">③ 用户要求文档（可选）</div>
-          <el-tabs v-model="reqTab">
-            <el-tab-pane label="知识库" name="kb">
-              <el-select v-model="requirementSubDb" clearable placeholder="先选子数据库" style="width:100%;margin-bottom:8px">
-                <el-option label="全部" value="" />
-                <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
-              </el-select>
-              <div class="doc-list">
-                <el-checkbox-group v-model="selectedRequirementIds">
-                  <div v-for="doc in requirementKbDocs" :key="doc.id" class="doc-item">
-                    <el-checkbox :label="doc.id">
-                      <span>{{ getFileIcon(doc.fileType) }} {{ doc.fileName }}</span>
-                    </el-checkbox>
-                  </div>
-                </el-checkbox-group>
-              </div>
-            </el-tab-pane>
-            <el-tab-pane label="本地上传" name="local">
-              <el-upload
-                drag
-                multiple
-                :auto-upload="false"
-                :file-list="requirementFileList"
-                :on-change="(_, list) => requirementFileList = list"
-                :on-remove="(_, list) => requirementFileList = list"
-                accept=".docx,.doc,.xlsx,.xls,.md,.txt"
-              >
-                <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
-                <div class="el-upload__text">拖拽或点击上传用户要求文档</div>
-              </el-upload>
-            </el-tab-pane>
-          </el-tabs>
+          <div class="mode-switch">
+            <button class="mode-btn left" :class="{ active: reqTab === 'kb' }" @click="reqTab = 'kb'">知识库文件</button>
+            <button class="mode-btn right" :class="{ active: reqTab === 'local' }" @click="reqTab = 'local'">本地上传</button>
+          </div>
+          <div v-if="reqTab === 'kb'">
+            <el-select v-model="requirementSubDb" clearable placeholder="先选子数据库" style="width:100%;margin-bottom:8px">
+              <el-option label="全部" value="" />
+              <el-option v-for="s in subDatabases" :key="s" :label="s" :value="s" />
+            </el-select>
+            <div class="doc-list">
+              <el-checkbox-group v-model="selectedRequirementIds">
+                <div v-for="doc in requirementKbDocs" :key="doc.id" class="doc-item">
+                  <el-checkbox :label="doc.id">
+                    <span>{{ getFileIcon(doc.fileType) }} {{ doc.fileName }}</span>
+                  </el-checkbox>
+                </div>
+              </el-checkbox-group>
+            </div>
+          </div>
+          <el-upload
+            v-else
+            drag
+            multiple
+            :auto-upload="false"
+            :file-list="requirementFileList"
+            :on-change="(_, list) => requirementFileList = list"
+            :on-remove="(_, list) => requirementFileList = list"
+            accept=".docx,.doc,.xlsx,.xls,.md,.txt"
+          >
+            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+            <div class="el-upload__text">拖拽或点击上传用户要求文档</div>
+          </el-upload>
         </div>
 
         <div class="panel-section">
@@ -196,7 +198,7 @@ import { knowledgeApi, tableFillApi, llmApi, fileApi } from '@/api/index.js'
 const kbDocs = ref([])
 const subDatabases = ref([])
 
-const templateMode = ref('local')
+const templateMode = ref('knowledge')
 const templateFile = ref(null)
 const templateFileList = ref([])
 const templateDocId = ref(null)
@@ -358,4 +360,27 @@ onMounted(async () => {
 .selector-box { background: var(--df-surface2); border: 1px solid var(--df-border); border-radius: 8px; padding: 10px; }
 .doc-list { max-height: 180px; overflow-y: auto; background: var(--df-surface2); border-radius: 8px; padding: 8px; }
 .doc-item { padding: 4px 2px; }
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--df-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.mode-btn {
+  border: 0;
+  background: var(--df-surface2);
+  color: var(--df-text-muted);
+  padding: 8px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.mode-btn.left { border-right: 1px solid var(--df-border); }
+.mode-btn.active {
+  background: rgba(91,138,240,0.18);
+  color: var(--df-primary);
+  font-weight: 600;
+}
 </style>

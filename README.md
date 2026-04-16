@@ -39,6 +39,27 @@ mvn spring-boot:run
 后端启动后访问：http://localhost:8080  
 H2 数据库控制台：http://localhost:8080/h2-console（用户名 `sa`，密码留空）
 
+### 可选：启用独立数据库环境（MySQL）
+
+项目已提供：
+- 建库脚本：`/home/runner/work/A23/A23/backend/src/main/resources/db/schema.sql`
+- 独立数据库配置：`/home/runner/work/A23/A23/backend/src/main/resources/application-db.properties`
+
+使用环境变量配置数据库地址和密码：
+
+```bash
+export DOCFUSION_DB_URL="jdbc:mysql://127.0.0.1:3306/docfusion?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+export DOCFUSION_DB_USERNAME="docfusion"
+export DOCFUSION_DB_PASSWORD="your_password"
+```
+
+然后以 `db` profile 启动：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.profiles=db
+```
+
 ### 2. 启动前端
 
 ```bash
@@ -54,11 +75,12 @@ npm run dev
 ## 首次使用
 
 1. 打开浏览器访问 http://localhost:5173
-2. 点击左侧【模型配置】，添加大模型（OpenAI / Ollama 等）
-3. 点击左侧【知识库】，批量上传测试文档（docx/xlsx/md/txt）
-4. 等待文档处理完成（状态变为"✓ 已处理"）
-5. 进入【智能对话】，勾选文档，即可提问
-6. 进入【表格填写】，上传模板表格，选择数据来源，点击填写
+2. 先在登录页注册并登录账号
+3. 点击左侧【模型配置】，添加大模型（OpenAI / Ollama 等）
+4. 点击左侧【知识库】，批量上传测试文档（docx/xlsx/md/txt）
+5. 等待文档处理完成（状态变为"✓ 已处理"）
+6. 进入【智能对话】，勾选文档，即可提问
+7. 进入【表格填写】，上传模板表格，选择数据来源，点击填写
 
 ---
 

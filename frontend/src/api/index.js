@@ -3,6 +3,12 @@ import { ElMessage } from 'element-plus'
 
 const api = axios.create({ baseURL: '/api' })
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('df-auth-token')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
 api.interceptors.response.use(
   res => res.data,
   err => {
@@ -13,6 +19,14 @@ api.interceptors.response.use(
 )
 
 export default api
+
+export const authApi = {
+  register: (data) => api.post('/auth/register', data),
+  login: (data) => api.post('/auth/login', data),
+  logout: () => api.post('/auth/logout'),
+  me: () => api.get('/auth/me'),
+  updateProfile: (data) => api.put('/auth/profile', data),
+}
 
 export const knowledgeApi = {
   upload: (file, category = '默认', libraryType = 'database', subDatabase = null) => {

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { llmApi, knowledgeApi } from '@/api/index.js'
+import { authApi, llmApi, knowledgeApi } from '@/api/index.js'
 
 export const useLlmStore = defineStore('llm', () => {
   const configs = ref([])
@@ -86,4 +86,65 @@ export const useSettingsStore = defineStore('settings', () => {
   })
 
   return { theme, language, setTheme, setLanguage, init, t }
+})
+
+export const useAuthStore = defineStore('auth', () => {
+  const user = ref(null)
+  const token = ref(localStorage.getItem('df-auth-token') || '')
+
+  const isLoggedIn = computed(() => !!token.value && !!user.value)
+
+  function persistToken(value) {
+    token.value = value || ''
+    if (value) localStorage.setItem('df-auth-token', value)
+    else localStorage.removeItem('df-auth-token')
+  }
+
+  async function restore() {
+    if (!token.value) return false
+    try {
+      const res = await authApi.me()
+      if (res.success) {
+        user.value = res.data
+        return true
+      }
+    } catch (e) {
+      // ignore invalid token
+    }
+    persistToken('')
+    user.value = null
+    return false
+  }
+
+  async function login(payload) {
+    const res = await authApi.login(payload)
+    if (res.success) {
+      persistToken(res.token)
+      user.value = res.data
+    }
+    return res
+  }
+
+  async function register(payload) {
+    const res = await authApi.register(payload)
+    if (res.success) {
+      persistToken(res.token)
+      user.value = res.data
+    }
+    return res
+  }
+
+  async function logout() {
+    try { await authApi.logout() } catch (e) {}
+    persistToken('')
+    user.value = null
+  }
+
+  async function updateProfile(payload) {
+    const res = await authApi.updateProfile(payload)
+    if (res.success) user.value = res.data
+    return res
+  }
+
+  return { user, token, isLoggedIn, restore, login, register, logout, updateProfile }
 })
