@@ -83,25 +83,42 @@ public class TableFillService {
         String description;
         boolean useStructuredTableFlow = "xlsx".equals(templateExt) || "xls".equals(templateExt);
         TemplateInfo docxTemplateInfo = null;
+        List<TemplateInfo> docxTableTemplates = Collections.emptyList();
         if (!useStructuredTableFlow && "docx".equals(templateExt) && "docx".equals(targetExt)) {
-            docxTemplateInfo = parseTemplateInfo(template.path, templateExt);
-            useStructuredTableFlow = docxTemplateInfo.structuredTableTemplate;
+            docxTableTemplates = parseDocxTemplateInfos(template.path);
+            if (!docxTableTemplates.isEmpty()) docxTemplateInfo = docxTableTemplates.get(0);
+            useStructuredTableFlow = docxTemplateInfo != null && docxTemplateInfo.structuredTableTemplate;
         }
 
         if (useStructuredTableFlow) {
-            TemplateInfo tmpl = docxTemplateInfo != null ? docxTemplateInfo : parseTemplateInfo(template.path, templateExt);
-            String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, String.join(" | ", tmpl.headers), targetExt);
             String fullSourceText = sourceText;
             if (requirementText != null && !requirementText.isBlank()) {
                 fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
             }
-            List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
-            if ("xlsx".equals(targetExt) || "xls".equals(targetExt) || ("docx".equals(targetExt) && "docx".equals(templateExt))) {
-                outputPath = writeRowsToTemplate(template.path, targetExt, tmpl, allRows, template.originalName);
-                description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
+
+            if ("docx".equals(templateExt) && "docx".equals(targetExt) && docxTableTemplates.size() > 1) {
+                Map<Integer, List<Map<String, String>>> rowsByTable = new LinkedHashMap<>();
+                int totalRows = 0;
+                for (TemplateInfo tableTmpl : docxTableTemplates) {
+                    String tableHeaders = String.join(" | ", tableTmpl.headers);
+                    String tableRequirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, tableHeaders, targetExt);
+                    List<Map<String, String>> tableRows = extractAllRows(config, tableTmpl, fullSourceText, requirementText, tableRequirementAnalysis);
+                    rowsByTable.put(tableTmpl.tableIndex, tableRows);
+                    totalRows += tableRows.size();
+                }
+                outputPath = writeRowsToDocxTables(template.path, docxTableTemplates, rowsByTable, template.originalName);
+                description = String.format("AI自动填写完成（按模板多表分类填充），共提取 %d 行数据，填充 %d 个表格", totalRows, docxTableTemplates.size());
             } else {
-                outputPath = writeStructuredTableOutput(targetExt, tmpl, allRows, template.originalName);
-                description = String.format("AI自动填写完成（按%s表格格式输出），共提取 %d 行数据", targetExt, allRows.size());
+                TemplateInfo tmpl = docxTemplateInfo != null ? docxTemplateInfo : parseTemplateInfo(template.path, templateExt);
+                String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, String.join(" | ", tmpl.headers), targetExt);
+                List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
+                if ("xlsx".equals(targetExt) || "xls".equals(targetExt) || ("docx".equals(targetExt) && "docx".equals(templateExt))) {
+                    outputPath = writeRowsToTemplate(template.path, targetExt, tmpl, allRows, template.originalName);
+                    description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
+                } else {
+                    outputPath = writeStructuredTableOutput(targetExt, tmpl, allRows, template.originalName);
+                    description = String.format("AI自动填写完成（按%s表格格式输出），共提取 %d 行数据", targetExt, allRows.size());
+                }
             }
         } else {
             String templateText = readTemplateAsText(template.path, templateExt);
@@ -549,29 +566,10 @@ public class TableFillService {
                 }
             }
         } else if ("docx".equals(ext)) {
-            try (XWPFDocument doc = new XWPFDocument(new FileInputStream(filePath))) {
-                List<XWPFTable> tables = doc.getTables();
-                for (XWPFTable table : tables) {
-                    if (table == null || table.getRows() == null || table.getRows().isEmpty()) continue;
-                    XWPFTableRow header = table.getRow(0);
-                    if (header == null) continue;
-                    List<String> headers = new ArrayList<>();
-                    for (XWPFTableCell cell : header.getTableCells()) {
-                        String h = cell == null ? "" : Optional.ofNullable(cell.getText()).orElse("").trim();
-                        headers.add(h);
-                    }
-                    long nonEmpty = headers.stream().filter(h -> !h.isBlank()).count();
-                    if (nonEmpty >= 2) {
-                        info.headers = headers;
-                        info.headerRowIndex = 0;
-                        info.dataStartRow = 1;
-                        info.templateDataRows = Math.max(0, table.getNumberOfRows() - 1);
-                        info.structuredTableTemplate = true;
-                        break;
-                    }
-                }
-            }
-            if (info.headers.isEmpty()) {
+            List<TemplateInfo> docxTableInfos = parseDocxTemplateInfos(filePath);
+            if (!docxTableInfos.isEmpty()) {
+                return docxTableInfos.get(0);
+            } else {
                 info.headers = Collections.singletonList("内容");
                 info.headerRowIndex = 0;
                 info.dataStartRow = 1;
@@ -579,6 +577,36 @@ public class TableFillService {
             }
         }
         return info;
+    }
+
+    private List<TemplateInfo> parseDocxTemplateInfos(String filePath) throws IOException {
+        List<TemplateInfo> infos = new ArrayList<>();
+        try (XWPFDocument doc = new XWPFDocument(new FileInputStream(filePath))) {
+            List<XWPFTable> tables = doc.getTables();
+            for (int tableIndex = 0; tableIndex < tables.size(); tableIndex++) {
+                XWPFTable table = tables.get(tableIndex);
+                if (table == null || table.getRows() == null || table.getRows().isEmpty()) continue;
+                XWPFTableRow header = table.getRow(0);
+                if (header == null) continue;
+                List<String> headers = new ArrayList<>();
+                for (XWPFTableCell cell : header.getTableCells()) {
+                    String h = cell == null ? "" : Optional.ofNullable(cell.getText()).orElse("").trim();
+                    headers.add(h);
+                }
+                long nonEmpty = headers.stream().filter(h -> !h.isBlank()).count();
+                if (nonEmpty >= 2) {
+                    TemplateInfo info = new TemplateInfo();
+                    info.headers = headers;
+                    info.headerRowIndex = 0;
+                    info.dataStartRow = 1;
+                    info.templateDataRows = Math.max(0, table.getNumberOfRows() - 1);
+                    info.structuredTableTemplate = true;
+                    info.tableIndex = tableIndex;
+                    infos.add(info);
+                }
+            }
+        }
+        return infos;
     }
 
     private TemplateInfo buildTemplateInfoFromTextTemplate(String templateText) {
@@ -891,6 +919,28 @@ public class TableFillService {
         return outputPath;
     }
 
+    private String writeRowsToDocxTables(String templatePath,
+                                         List<TemplateInfo> tableTemplates,
+                                         Map<Integer, List<Map<String, String>>> rowsByTable,
+                                         String originalName) throws IOException {
+        String outputFileName = sanitizeFilename(System.currentTimeMillis() + "_filled_" + originalName);
+        Path outFile = resolveOutputPath(outputFileName);
+        String outputPath = outFile.toString();
+        Files.copy(Paths.get(templatePath), Paths.get(outputPath), StandardCopyOption.REPLACE_EXISTING);
+
+        try (XWPFDocument doc = new XWPFDocument(new FileInputStream(outputPath))) {
+            List<XWPFTable> tables = doc.getTables();
+            for (TemplateInfo tmpl : tableTemplates) {
+                if (tmpl.tableIndex < 0 || tmpl.tableIndex >= tables.size()) continue;
+                XWPFTable table = tables.get(tmpl.tableIndex);
+                List<Map<String, String>> rows = rowsByTable.getOrDefault(tmpl.tableIndex, Collections.emptyList());
+                fillDocxTable(table, tmpl, rows);
+            }
+            try (FileOutputStream fos = new FileOutputStream(outputPath)) { doc.write(fos); }
+        }
+        return outputPath;
+    }
+
     private String writeRowsToNewExcel(List<String> headers,
                                        List<Map<String, String>> rows,
                                        String originalName) throws IOException {
@@ -985,30 +1035,37 @@ public class TableFillService {
                 try (FileOutputStream fos = new FileOutputStream(outputPath)) { doc.write(fos); }
                 return;
             }
-            XWPFTable table = tables.get(0);
-            XWPFTableRow headerRow = table.getRow(0);
-            List<String> docHeaders = new ArrayList<>();
-            if (headerRow != null) for (XWPFTableCell c : headerRow.getTableCells()) docHeaders.add(c.getText().trim());
+            int tableIndex = (tmpl.tableIndex >= 0 && tmpl.tableIndex < tables.size()) ? tmpl.tableIndex : 0;
+            XWPFTable table = tables.get(tableIndex);
+            fillDocxTable(table, tmpl, rows);
+            try (FileOutputStream fos = new FileOutputStream(outputPath)) { doc.write(fos); }
+        }
+    }
 
-            for (int ri = 0; ri < rows.size(); ri++) {
-                int tableRowIdx = tmpl.dataStartRow + ri;
-                XWPFTableRow tableRow = tableRowIdx < table.getRows().size() ? table.getRow(tableRowIdx) : table.createRow();
-                Map<String, String> dataRow = rows.get(ri);
-                for (int ci = 0; ci < docHeaders.size(); ci++) {
-                    String value = findValueByHeader(dataRow, docHeaders.get(ci));
-                    if (ci < tableRow.getTableCells().size()) {
-                        XWPFTableCell cell = tableRow.getCell(ci);
-                        if (cell != null) {
-                            while (cell.getParagraphs().size() > 1) cell.removeParagraph(cell.getParagraphs().size() - 1);
-                            if (!cell.getParagraphs().isEmpty() && !cell.getParagraphs().get(0).getRuns().isEmpty()) {
-                                cell.getParagraphs().get(0).removeRun(0);
-                            }
-                            cell.setText(value == null ? "" : value);
+    private void fillDocxTable(XWPFTable table, TemplateInfo tmpl, List<Map<String, String>> rows) {
+        if (table == null || rows == null || rows.isEmpty()) return;
+        XWPFTableRow headerRow = table.getRow(0);
+        List<String> docHeaders = new ArrayList<>();
+        if (headerRow != null) for (XWPFTableCell c : headerRow.getTableCells()) docHeaders.add(c.getText().trim());
+        if (docHeaders.isEmpty()) docHeaders = tmpl.headers;
+
+        for (int ri = 0; ri < rows.size(); ri++) {
+            int tableRowIdx = tmpl.dataStartRow + ri;
+            XWPFTableRow tableRow = tableRowIdx < table.getRows().size() ? table.getRow(tableRowIdx) : table.createRow();
+            Map<String, String> dataRow = rows.get(ri);
+            for (int ci = 0; ci < docHeaders.size(); ci++) {
+                String value = findValueByHeader(dataRow, docHeaders.get(ci));
+                if (ci < tableRow.getTableCells().size()) {
+                    XWPFTableCell cell = tableRow.getCell(ci);
+                    if (cell != null) {
+                        while (cell.getParagraphs().size() > 1) cell.removeParagraph(cell.getParagraphs().size() - 1);
+                        if (!cell.getParagraphs().isEmpty() && !cell.getParagraphs().get(0).getRuns().isEmpty()) {
+                            cell.getParagraphs().get(0).removeRun(0);
                         }
+                        cell.setText(value == null ? "" : value);
                     }
                 }
             }
-            try (FileOutputStream fos = new FileOutputStream(outputPath)) { doc.write(fos); }
         }
     }
 
@@ -1261,5 +1318,6 @@ public class TableFillService {
         int dataStartRow = 1;
         int templateDataRows = 0;
         boolean structuredTableTemplate = false;
+        int tableIndex = 0;
     }
 }
