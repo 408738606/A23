@@ -33,6 +33,7 @@ public class TableFillService {
     private static final int MAX_FACTS_CHARS = 18000;
     private static final int EXTRACTION_CHUNK_SIZE = 3600;
     private static final int EXTRACTION_PARALLELISM = 2;
+    private static final int MIN_COMPLETE_ROWS = 6;
     private static final int MIN_RELEVANT_CHUNKS = 3;
     private static final int MAX_RELEVANT_CHUNKS = 12;
     private static final int FOCUS_KEYWORD_LIMIT = 36;
@@ -80,15 +81,22 @@ public class TableFillService {
 
         String outputPath;
         String description;
-        if ("xlsx".equals(templateExt) || "xls".equals(templateExt)) {
-            TemplateInfo tmpl = parseTemplateInfo(template.path, templateExt);
+        boolean useStructuredTableFlow = "xlsx".equals(templateExt) || "xls".equals(templateExt);
+        TemplateInfo docxTemplateInfo = null;
+        if (!useStructuredTableFlow && "docx".equals(templateExt) && "docx".equals(targetExt)) {
+            docxTemplateInfo = parseTemplateInfo(template.path, templateExt);
+            useStructuredTableFlow = docxTemplateInfo.structuredTableTemplate;
+        }
+
+        if (useStructuredTableFlow) {
+            TemplateInfo tmpl = docxTemplateInfo != null ? docxTemplateInfo : parseTemplateInfo(template.path, templateExt);
             String requirementAnalysis = analyzeRequirementDocumentSafe(config, requirementText, String.join(" | ", tmpl.headers), targetExt);
             String fullSourceText = sourceText;
             if (requirementText != null && !requirementText.isBlank()) {
                 fullSourceText = sourceText + "\n\n=== 用户要求 ===\n" + requirementText;
             }
             List<Map<String, String>> allRows = extractAllRows(config, tmpl, fullSourceText, requirementText, requirementAnalysis);
-            if ("xlsx".equals(targetExt) || "xls".equals(targetExt)) {
+            if ("xlsx".equals(targetExt) || "xls".equals(targetExt) || ("docx".equals(targetExt) && "docx".equals(templateExt))) {
                 outputPath = writeRowsToTemplate(template.path, targetExt, tmpl, allRows, template.originalName);
                 description = String.format("AI自动填写完成，共提取 %d 行数据", allRows.size());
             } else {
@@ -540,6 +548,35 @@ public class TableFillService {
                     info.dataStartRow = 1;
                 }
             }
+        } else if ("docx".equals(ext)) {
+            try (XWPFDocument doc = new XWPFDocument(new FileInputStream(filePath))) {
+                List<XWPFTable> tables = doc.getTables();
+                for (XWPFTable table : tables) {
+                    if (table == null || table.getRows() == null || table.getRows().isEmpty()) continue;
+                    XWPFTableRow header = table.getRow(0);
+                    if (header == null) continue;
+                    List<String> headers = new ArrayList<>();
+                    for (XWPFTableCell cell : header.getTableCells()) {
+                        String h = cell == null ? "" : Optional.ofNullable(cell.getText()).orElse("").trim();
+                        headers.add(h);
+                    }
+                    long nonEmpty = headers.stream().filter(h -> !h.isBlank()).count();
+                    if (nonEmpty >= 2) {
+                        info.headers = headers;
+                        info.headerRowIndex = 0;
+                        info.dataStartRow = 1;
+                        info.templateDataRows = Math.max(0, table.getNumberOfRows() - 1);
+                        info.structuredTableTemplate = true;
+                        break;
+                    }
+                }
+            }
+            if (info.headers.isEmpty()) {
+                info.headers = Collections.singletonList("内容");
+                info.headerRowIndex = 0;
+                info.dataStartRow = 1;
+                info.structuredTableTemplate = false;
+            }
         }
         return info;
     }
@@ -607,7 +644,9 @@ public class TableFillService {
         String compactRequirementText = clampText(requirementText, 1200, "抽取用用户要求");
         List<String> focusTerms = buildFocusTerms(compactRequirementText, requirementAnalysis, String.join(" | ", tmpl.headers), tmpl.headers);
         List<String> selectedChunks = selectRelevantChunks(chunks, focusTerms, MIN_RELEVANT_CHUNKS, MAX_RELEVANT_CHUNKS);
-        if (!selectedChunks.isEmpty() && selectedChunks.size() < chunks.size()) {
+        List<String> allChunks = chunks;
+        boolean filtered = !selectedChunks.isEmpty() && selectedChunks.size() < chunks.size();
+        if (filtered) {
             log.info("表格抽取启用需求/模板优先筛选：{} -> {} 段", chunks.size(), selectedChunks.size());
             chunks = selectedChunks;
         }
@@ -649,6 +688,22 @@ public class TableFillService {
             }
         }
 
+        if (filtered && allRows.size() < MIN_COMPLETE_ROWS) {
+            List<String> remaining = new ArrayList<>();
+            Set<String> selectedSet = new HashSet<>(chunksToProcess);
+            for (String chunk : allChunks) {
+                if (!selectedSet.contains(chunk)) remaining.add(chunk);
+            }
+            if (!remaining.isEmpty()) {
+                log.info("首次抽取行数较少（{}），补充处理未命中分段 {} 段", allRows.size(), remaining.size());
+                List<Map<String, String>> supplementRows = extractRowsFromChunks(config, tmpl, remaining, compactRequirementText, requirementAnalysis);
+                for (Map<String, String> row : supplementRows) {
+                    String key = buildRowKey(row, tmpl.headers);
+                    if (!key.isBlank() && seen.add(key)) allRows.add(row);
+                }
+            }
+        }
+
         if (allRows.isEmpty()) {
             String globalChunk = clampText(fullSourceText, CHUNK_SIZE * 2, "全局提取文本");
             String fallbackPrompt = buildExtractionPrompt(tmpl.headers, headersJson, globalChunk, 0, 1, requirementText, requirementAnalysis)
@@ -669,6 +724,23 @@ public class TableFillService {
         }
 
         return allRows;
+    }
+
+    private List<Map<String, String>> extractRowsFromChunks(LlmConfig config,
+                                                            TemplateInfo tmpl,
+                                                            List<String> chunks,
+                                                            String compactRequirementText,
+                                                            String requirementAnalysis) throws Exception {
+        if (chunks == null || chunks.isEmpty()) return Collections.emptyList();
+        String headersJson = objectMapper.writeValueAsString(tmpl.headers);
+        List<Map<String, String>> result = new ArrayList<>();
+        for (int ci = 0; ci < chunks.size(); ci++) {
+            List<Map<String, String>> rows = extractRowsFromChunk(
+                    config, tmpl, headersJson, chunks.get(ci), ci, chunks.size(), compactRequirementText, requirementAnalysis
+            );
+            result.addAll(rows);
+        }
+        return result;
     }
 
     private List<Map<String, String>> extractRowsFromChunk(LlmConfig config,
@@ -923,12 +995,38 @@ public class TableFillService {
                 XWPFTableRow tableRow = tableRowIdx < table.getRows().size() ? table.getRow(tableRowIdx) : table.createRow();
                 Map<String, String> dataRow = rows.get(ri);
                 for (int ci = 0; ci < docHeaders.size(); ci++) {
-                    String value = dataRow.getOrDefault(docHeaders.get(ci), "");
-                    if (ci < tableRow.getTableCells().size()) tableRow.getCell(ci).setText(value);
+                    String value = findValueByHeader(dataRow, docHeaders.get(ci));
+                    if (ci < tableRow.getTableCells().size()) {
+                        XWPFTableCell cell = tableRow.getCell(ci);
+                        if (cell != null) {
+                            while (cell.getParagraphs().size() > 1) cell.removeParagraph(cell.getParagraphs().size() - 1);
+                            if (!cell.getParagraphs().isEmpty() && !cell.getParagraphs().get(0).getRuns().isEmpty()) {
+                                cell.getParagraphs().get(0).removeRun(0);
+                            }
+                            cell.setText(value == null ? "" : value);
+                        }
+                    }
                 }
             }
             try (FileOutputStream fos = new FileOutputStream(outputPath)) { doc.write(fos); }
         }
+    }
+
+    private String findValueByHeader(Map<String, String> dataRow, String header) {
+        if (dataRow == null || dataRow.isEmpty()) return "";
+        if (header == null) return "";
+        String direct = dataRow.get(header);
+        if (direct != null) return direct;
+        String target = normalizeHeaderKey(header);
+        for (Map.Entry<String, String> e : dataRow.entrySet()) {
+            if (normalizeHeaderKey(e.getKey()).equals(target)) return e.getValue() == null ? "" : e.getValue();
+        }
+        return "";
+    }
+
+    private String normalizeHeaderKey(String header) {
+        if (header == null) return "";
+        return header.replaceAll("\\s+", "").replaceAll("[：:]", "").trim().toLowerCase();
     }
 
     private void writePlainText(String outputPath, TemplateInfo tmpl, List<Map<String, String>> rows) throws IOException {
@@ -1162,5 +1260,6 @@ public class TableFillService {
         int headerRowIndex = 0;
         int dataStartRow = 1;
         int templateDataRows = 0;
+        boolean structuredTableTemplate = false;
     }
 }
